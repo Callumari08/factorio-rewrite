@@ -16,10 +16,7 @@ impl MapPosition {
     }
 
     pub const fn tile(self) -> TilePosition {
-        TilePosition {
-            x: self.x.div_euclid(SUBTILES_PER_TILE),
-            y: self.y.div_euclid(SUBTILES_PER_TILE),
-        }
+        TilePosition { x: self.x.div_euclid(SUBTILES_PER_TILE), y: self.y.div_euclid(SUBTILES_PER_TILE) }
     }
 }
 

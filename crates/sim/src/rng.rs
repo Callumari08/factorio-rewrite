@@ -22,7 +22,7 @@ impl DetRng {
     /// Uniform integer in `0..bound` without modulo bias.
     pub fn below(&mut self, bound: u32) -> u32 {
         assert!(bound > 0);
-        ((self.next_u64() >> 32) * bound as u64 >> 32) as u32
+        (((self.next_u64() >> 32) * bound as u64) >> 32) as u32
     }
 
     pub(crate) fn state(&self) -> u64 {

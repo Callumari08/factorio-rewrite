@@ -34,13 +34,7 @@ pub struct Simulation {
 
 impl Simulation {
     pub fn new(prototypes: Arc<PrototypeDb>, seed: u64) -> Self {
-        Simulation {
-            prototypes,
-            tick: 0,
-            rng: DetRng::new(seed),
-            next_entity_id: 1,
-            entities: BTreeMap::new(),
-        }
+        Simulation { prototypes, tick: 0, rng: DetRng::new(seed), next_entity_id: 1, entities: BTreeMap::new() }
     }
 
     pub fn tick(&self) -> Tick {
@@ -84,10 +78,8 @@ impl Simulation {
                 }
                 let id = EntityId(self.next_entity_id);
                 self.next_entity_id += 1;
-                self.entities.insert(
-                    id,
-                    Entity { prototype: prototype.clone(), position: *position, direction: *direction },
-                );
+                self.entities
+                    .insert(id, Entity { prototype: prototype.clone(), position: *position, direction: *direction });
             }
             InputAction::DebugRemoveEntity { position } => {
                 let tile = position.tile();
