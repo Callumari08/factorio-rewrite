@@ -14,3 +14,4 @@ factorio-sim.workspace = true
 factorio-data.workspace = true
 bevy.workspace = true
 log.workspace = true
+image = { version = "0.25", default-features = false, features = ["png"] }
