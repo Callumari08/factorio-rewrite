@@ -33,6 +33,8 @@ Not done yet: research (every recipe is available), Factorio's own noise-express
 generator, trees, rocks, cliffs and enemies, oil and fluid recipes, labs, combat, vehicles,
 trains, logistics robots, circuits, blueprints, and saving and loading.
 
+See [ROADMAP.md](ROADMAP.md) for the plan.
+
 ## Layout
 
 | Crate | Path | What it does |
