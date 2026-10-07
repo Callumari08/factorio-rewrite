@@ -1,0 +1,13 @@
+# Copy to `factorio-rewrite.toml` (in the directory you run from) or to
+# ~/.config/factorio-rewrite/factorio-rewrite.toml and edit as needed.
+# Every key is optional.
+
+# Root of your Factorio install: the folder that contains `data/base/info.json`.
+# The FACTORIO_PATH environment variable overrides this.
+# factorio_path = "/home/you/.local/share/Steam/steamapps/common/Factorio"
+
+# Mods to enable on top of `core` and `base`. Not supported yet beyond loading data.
+# mods = ["elevated-rails", "quality", "space-age"]
+
+# Extra folders containing unpacked mods (one folder per mod, each with info.json).
+# mod_dirs = ["/home/you/factorio-dev-mods"]
