@@ -44,6 +44,51 @@ impl Fixed {
         self.0 as f64 / (1u64 << Self::FRAC_BITS) as f64
     }
 
+    pub const fn frac_is_zero(self) -> bool {
+        self.0 & ((1 << Self::FRAC_BITS) - 1) == 0
+    }
+
+    pub const fn ceil_int(self) -> i64 {
+        -((-self.0) >> Self::FRAC_BITS)
+    }
+
+    pub fn min(self, o: Fixed) -> Fixed {
+        if o < self { o } else { self }
+    }
+
+    pub fn max(self, o: Fixed) -> Fixed {
+        if o > self { o } else { self }
+    }
+
+    pub fn clamp(self, lo: Fixed, hi: Fixed) -> Fixed {
+        self.max(lo).min(hi)
+    }
+
+    pub const fn abs(self) -> Fixed {
+        Fixed(self.0.abs())
+    }
+
+    pub const fn is_positive(self) -> bool {
+        self.0 > 0
+    }
+
+    /// Multiplies by an integer without rounding.
+    pub const fn mul_int(self, v: i64) -> Fixed {
+        Fixed(self.0 * v)
+    }
+
+    /// Divides by an integer, rounding toward negative infinity.
+    pub const fn div_int(self, v: i64) -> Fixed {
+        Fixed(self.0.div_euclid(v))
+    }
+
+    /// Integer square root of a non-negative value.
+    pub fn sqrt(self) -> Fixed {
+        assert!(self.0 >= 0);
+        let v = (self.0 as u128) << Self::FRAC_BITS;
+        Fixed(isqrt(v) as i64)
+    }
+
     pub const fn floor_int(self) -> i64 {
         self.0 >> Self::FRAC_BITS
     }
@@ -60,6 +105,19 @@ impl Fixed {
         let wide = ((self.0 as i128) << Self::FRAC_BITS).div_euclid(rhs.0 as i128);
         i64::try_from(wide).ok().map(Fixed)
     }
+}
+
+fn isqrt(v: u128) -> u128 {
+    if v < 2 {
+        return v;
+    }
+    let mut x = v;
+    let mut y = x.div_ceil(2);
+    while y < x {
+        x = y;
+        y = (x + v / x) / 2;
+    }
+    x
 }
 
 impl Add for Fixed {
@@ -132,5 +190,8 @@ mod tests {
         assert_eq!(Fixed::from_int(3) / Fixed::from_int(2), Fixed::from_ratio(3, 2));
         assert_eq!((-Fixed::ONE / Fixed::from_int(3)).raw(), -21846);
         assert_eq!(Fixed::from_f64_at_load(0.03125), a);
+        assert_eq!(Fixed::from_int(9).sqrt(), Fixed::from_int(3));
+        assert_eq!(Fixed::from_ratio(3, 2).ceil_int(), 2);
+        assert_eq!(Fixed::from_ratio(-3, 2).ceil_int(), -1);
     }
 }

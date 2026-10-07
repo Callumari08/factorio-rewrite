@@ -6,22 +6,30 @@
 //! * No `f32`/`f64` in game state or game logic. Use [`fixed::Fixed`] and the integer
 //!   map types in [`map`]. Floats from prototype data are converted once, at load time.
 //! * No `HashMap`/`HashSet` iteration in game logic (iteration order is randomised).
-//!   Use `Vec`, `BTreeMap`, or the id-ordered storage in [`world`].
+//!   Use `Vec`, `BTreeMap`, or id-ordered storage.
 //! * No wall-clock time, threads, or OS randomness. Randomness comes from [`rng::DetRng`]
 //!   stored in the simulation state.
 //! * All external influence enters through [`input::InputAction`]s applied at a tick.
 //!
 //! This crate does not depend on Bevy or Lua; rendering and data loading live elsewhere.
 
+pub mod belt;
+pub mod energy;
 pub mod fixed;
 pub mod input;
+pub mod inventory;
+pub mod machines;
 pub mod map;
+pub mod noise;
+pub mod player;
+pub mod power;
 pub mod proto;
 pub mod rng;
+pub mod surface;
 pub mod world;
 
 pub use fixed::Fixed;
-pub use input::InputAction;
+pub use input::{InputAction, PlayerInput};
 pub use proto::PrototypeDb;
 pub use world::{Simulation, Tick};
 
