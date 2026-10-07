@@ -27,9 +27,8 @@ pub struct MouseWorld(pub Option<MapPosition>);
 
 #[derive(Resource, Default)]
 pub struct UiState {
+    /// The character window (E). Entity windows are opened through the simulation.
     pub inventory_open: bool,
-    /// Position of the entity whose window is open.
-    pub opened: Option<MapPosition>,
     /// True while the pointer is over a UI panel.
     pub pointer_over_ui: bool,
     pub status: String,
@@ -44,14 +43,14 @@ struct ControlState {
 
 /// `FACTORIO_REWRITE_UI=1` opens the inventory (and the first machine's window) at start,
 /// for screenshots.
-fn open_from_env(sim: Res<Sim>, mut ui: ResMut<UiState>) {
+fn open_from_env(sim: Res<Sim>, mut ui: ResMut<UiState>, mut pending: ResMut<PendingInputs>) {
     if std::env::var_os("FACTORIO_REWRITE_UI").is_none() {
         return;
     }
     ui.inventory_open = true;
     // `FACTORIO_REWRITE_UI=power` opens a pole (the network window) instead of a machine.
     let power = std::env::var("FACTORIO_REWRITE_UI").is_ok_and(|v| v == "power");
-    ui.opened = sim
+    let at = sim
         .0
         .entities()
         .find(|(_, e)| match e.state {
@@ -60,6 +59,9 @@ fn open_from_env(sim: Res<Sim>, mut ui: ResMut<UiState>) {
             _ => false,
         })
         .map(|(_, e)| e.position);
+    if at.is_some() {
+        pending.push(InputAction::OpenEntity(at));
+    }
 }
 
 fn update_mouse_world(
@@ -101,15 +103,26 @@ fn sandbox_kit(sim: &Sim, pending: &mut PendingInputs) {
     }
 }
 
+fn held_item(sim: &Sim) -> Option<factorio_sim::proto::ItemId> {
+    sim.0.player(LOCAL_PLAYER).and_then(|p| p.character.as_ref()).and_then(|c| c.cursor).map(|c| c.item)
+}
+
 fn keyboard(
-    keys: Res<ButtonInput<KeyCode>>,
+    mut keys: ResMut<ButtonInput<KeyCode>>,
+    mut focus: MessageReader<bevy::window::WindowFocused>,
     sim: Res<Sim>,
     mouse: Res<MouseWorld>,
     mut cursor: ResMut<Cursor>,
     mut ui: ResMut<UiState>,
     mut pending: ResMut<PendingInputs>,
     mut state: Local<ControlState>,
+    mut frames: Local<u32>,
 ) {
+    // When the window loses focus key releases are never seen, so forget held keys;
+    // otherwise the character keeps walking (the game only walks while keys are held).
+    if focus.read().any(|f| !f.focused) {
+        keys.reset_all();
+    }
     let (mut dx, mut dy) = (0, 0);
     if keys.pressed(KeyCode::KeyW) {
         dy -= 1;
@@ -134,47 +147,66 @@ fn keyboard(
         (-1, -1) => Some(Direction(14)),
         _ => None,
     };
-    if walking != state.walking {
+    // Re-send now and then too, so the simulation can never drift from the keys held.
+    *frames += 1;
+    let sim_walking = sim.0.player(LOCAL_PLAYER).and_then(|p| p.character.as_ref()).and_then(|c| c.walking);
+    if walking != state.walking || (frames.is_multiple_of(15) && sim_walking != walking) {
         state.walking = walking;
         pending.push(InputAction::SetWalking(walking));
     }
 
+    let opened = sim.0.player(LOCAL_PLAYER).and_then(|p| p.opened).is_some();
     if keys.just_pressed(KeyCode::KeyE) {
-        ui.inventory_open = !ui.inventory_open;
-        if !ui.inventory_open {
-            ui.opened = None;
+        if opened || ui.inventory_open {
+            ui.inventory_open = false;
+            pending.push(InputAction::OpenEntity(None));
+        } else {
+            ui.inventory_open = true;
         }
     }
     if keys.just_pressed(KeyCode::Escape) {
         ui.inventory_open = false;
-        ui.opened = None;
+        pending.push(InputAction::OpenEntity(None));
     }
+    let held = held_item(&sim);
     if keys.just_pressed(KeyCode::KeyR) {
         let reverse = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
-        if cursor.item.is_some() {
+        if held.is_some_and(|i| sim.0.prototypes().item(i).place_result.is_some()) {
             cursor.direction = if reverse { cursor.direction.rotate_ccw() } else { cursor.direction.rotate_cw() };
         } else if let Some(p) = mouse.0 {
             pending.push(InputAction::Rotate { position: p, reverse });
         }
     }
     if keys.just_pressed(KeyCode::KeyQ) {
-        if cursor.item.is_some() {
-            cursor.item = None;
+        if held.is_some() {
+            pending.push(InputAction::ClearCursor);
         } else if let Some(id) = mouse.0.and_then(|p| sim.0.entity_at(p)) {
             // Pipette: hold the item that builds the hovered entity, if we have one.
-            let db = sim.0.prototypes();
             let e = sim.0.entity(id).unwrap();
-            let item = db.item_to_place(e.proto);
-            let have = sim
-                .0
-                .player(LOCAL_PLAYER)
-                .and_then(|p| p.character.as_ref())
-                .zip(item)
-                .is_some_and(|(c, i)| c.inventory.count(i) > 0);
-            if have {
-                cursor.item = item;
+            if let Some(item) = sim.0.prototypes().item_to_place(e.proto) {
+                pending.push(InputAction::PickItem(item));
                 cursor.direction = e.direction;
             }
+        }
+    }
+    // Quickbar: 1-0 pick the item in the first row.
+    let digits = [
+        KeyCode::Digit1,
+        KeyCode::Digit2,
+        KeyCode::Digit3,
+        KeyCode::Digit4,
+        KeyCode::Digit5,
+        KeyCode::Digit6,
+        KeyCode::Digit7,
+        KeyCode::Digit8,
+        KeyCode::Digit9,
+        KeyCode::Digit0,
+    ];
+    for (i, k) in digits.iter().enumerate() {
+        if keys.just_pressed(*k)
+            && let Some(item) = sim.0.player(LOCAL_PLAYER).and_then(|p| p.quickbar[i])
+        {
+            pending.push(InputAction::PickItem(item));
         }
     }
     if keys.pressed(KeyCode::KeyF) {
@@ -184,18 +216,11 @@ fn keyboard(
         sandbox_kit(&sim, &mut pending);
         ui.status = "Sandbox kit added to inventory".into();
     }
-    // Drop the cursor item when it runs out.
-    if let Some(item) = cursor.item {
-        let have =
-            sim.0.player(LOCAL_PLAYER).and_then(|p| p.character.as_ref()).is_some_and(|c| c.inventory.count(item) > 0);
-        if !have {
-            cursor.item = None;
-        }
-    }
 }
 
 fn mouse(
     buttons: Res<ButtonInput<MouseButton>>,
+    keys: Res<ButtonInput<KeyCode>>,
     sim: Res<Sim>,
     mouse: Res<MouseWorld>,
     cursor: Res<Cursor>,
@@ -206,21 +231,33 @@ fn mouse(
     let Some(at) = mouse.0 else { return };
     let tile = at.tile();
     let over_ui = ui.pointer_over_ui;
+    let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
+    let held = held_item(&sim);
+    let buildable = held.filter(|i| sim.0.prototypes().item(*i).place_result.is_some());
 
-    // Left: build with the cursor item (dragging builds along the way), or open an entity.
+    if !over_ui && ctrl {
+        // Ctrl+click: fast transfer (right button: half).
+        if buttons.just_pressed(MouseButton::Left) {
+            pending.push(InputAction::FastTransfer { position: at, half: false });
+        } else if buttons.just_pressed(MouseButton::Right) {
+            pending.push(InputAction::FastTransfer { position: at, half: true });
+        }
+        return;
+    }
+
+    // Left: build the held item (dragging builds along the way), or open an entity.
     if buttons.pressed(MouseButton::Left) && !over_ui {
-        if let Some(item) = cursor.item {
-            let first = buttons.just_pressed(MouseButton::Left);
-            if first || state.last_build_tile != Some(tile) {
+        if let Some(item) = buildable {
+            if buttons.just_pressed(MouseButton::Left) || state.last_build_tile != Some(tile) {
                 pending.push(InputAction::Build { item, position: at, direction: cursor.direction });
                 state.last_build_tile = Some(tile);
             }
         } else if buttons.just_pressed(MouseButton::Left) {
-            if let Some(id) = sim.0.entity_at(at) {
-                ui.opened = Some(sim.0.entity(id).unwrap().position);
-                ui.inventory_open = true;
-            } else {
-                ui.opened = None;
+            let target =
+                sim.0.entity_at(at).filter(|id| factorio_sim::cursor::has_window(sim.0.prototypes(), &sim.0, *id));
+            pending.push(InputAction::OpenEntity(target.map(|_| at)));
+            if target.is_none() {
+                ui.inventory_open = false;
             }
         }
     }
@@ -228,7 +265,8 @@ fn mouse(
         state.last_build_tile = None;
     }
 
-    // Right: hold to mine whatever is under the cursor.
+    // Right (held): mine what is under the cursor, also while holding an item, as in the
+    // game. Clearing the cursor is Q.
     if buttons.pressed(MouseButton::Right) && !over_ui {
         if state.mining_tile != Some(tile) {
             state.mining_tile = Some(tile);

@@ -48,6 +48,20 @@ Each step ends with a playtest. Feedback from it becomes a ".5" step before the 
 9. **Combat.** Enemies, pollution, evolution, turrets, military items, health.
 10. **Save, load and replays.**
 
-Later: Space Age (as a mod set on the same data-driven systems), multiplayer.
+## Step 4: Single-player polish
+
+1. **Main menu.** Title screen, new game with map settings (seed, resource and terrain
+   sliders), load game, settings (controls, graphics, sound), quit.
+2. **Polish.** Rebindable controls (including the optional right-click clear-cursor binding),
+   remaining visual effects (lights, smoke, tile transitions), GUI skin from the game's
+   sprite sheets.
+3. **Performance.** Large factories at 60 UPS.
+4. **Space Age readiness.** Make sure the data-driven systems can take the DLC's prototypes.
+
+## Later
+
+- Space Age (as a mod set on the same data-driven systems).
+- Multiplayer. The simulation keeps following the determinism rules (fixed tick, fixed
+  point, stable ordering, inputs only) so lockstep multiplayer can be added.
 
 The order can change based on playtesting and priorities.

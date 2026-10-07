@@ -21,7 +21,6 @@ use bevy::render::view::screenshot::{Screenshot, save_to_disk};
 use factorio_data::GameData;
 use factorio_sim::input::{InputAction, PlayerInput};
 use factorio_sim::map::Direction;
-use factorio_sim::proto::ItemId;
 use factorio_sim::{Simulation, TICKS_PER_SECOND};
 
 /// World units per tile. Factorio's base sprite resolution is 32 px per tile.
@@ -46,10 +45,9 @@ impl PendingInputs {
     }
 }
 
-/// What the player is holding for building, and its build direction.
+/// Build direction for the held item (the held stack itself is simulation state).
 #[derive(Resource)]
 pub struct Cursor {
-    pub item: Option<ItemId>,
     pub direction: Direction,
 }
 
@@ -104,7 +102,7 @@ fn main() -> AppExit {
         .insert_resource(ClearColor(Color::srgb(0.05, 0.05, 0.05)))
         .insert_resource(Sim(sim))
         .insert_resource(Data(Arc::new(data)))
-        .insert_resource(Cursor { item: None, direction: Direction::NORTH })
+        .insert_resource(Cursor { direction: Direction::NORTH })
         .init_resource::<PendingInputs>()
         .add_plugins((
             chart::ChartPlugin,

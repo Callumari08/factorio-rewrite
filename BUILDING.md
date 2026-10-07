@@ -35,19 +35,23 @@ and a pistol, next to patches of iron, copper, coal and stone.
 | Input | Action |
 |-------|--------|
 | `W` `A` `S` `D` | Walk (diagonals too) |
-| Right mouse (hold) | Mine the building or resource under the cursor |
-| `E` | Open/close the inventory and crafting menu |
-| Click an inventory item | Hold it for building (click again to put it back) |
-| Left mouse | Build the held item (drag to build lines), or open a building's window |
+| Right mouse (hold) | Mine the building or resource under the cursor (also while holding an item) |
+| `E` | Open/close the character window (inventory and crafting) |
+| Left click on a slot | Pick up / put down / swap the stack |
+| Right click on a slot | Take half / put down one |
+| `Shift`+click / `Ctrl`+click on a slot | Move a stack / all of that item to the open building (or back) |
+| Left mouse in the world | Build the held item (drag for lines), or open a building |
+| `Ctrl`+left / `Ctrl`+right on a building | Insert the held stack / half of it, or take its output |
 | `R` / `Shift`+`R` | Rotate the held item or the building under the cursor |
-| `Q` | Clear the held item, or pick the item for the building under the cursor |
+| `Q` | Put the held stack back, or pick the item for the building under the cursor |
+| `1` – `0` | Pick up the quickbar item. Click a quickbar slot while holding an item to assign it; right click clears it |
 | `F` (hold) | Pick up items from the ground and nearby belts |
-| Click a recipe | Craft 1 (`Shift`+click: 5). Click a queued craft at the bottom to cancel it |
+| Recipe: left / right / `Shift`+click | Craft 1 / 5 / as many as possible. Click a queued craft (bottom left) to cancel it |
 | Mouse wheel | Zoom |
 | `F1` | Sandbox: add a kit of belts, inserters, drills, furnaces, power and plates |
 
-In a building's window, **Insert held item** moves the item you are holding into it (fuel,
-ore, ingredients); **Take all** takes its output. Assemblers show a recipe grid to choose from.
+Buildings show their slots in their window: click with a held stack to put fuel, ore or
+ingredients in, and click the result slot to take output. Assemblers show a recipe chooser.
 
 Optional environment variables:
 

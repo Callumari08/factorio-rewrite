@@ -248,7 +248,7 @@ impl Simulation {
         self.tile_index.get(&t).copied()
     }
 
-    pub(crate) fn footprint(proto: &EntityProto, position: MapPosition, direction: Direction) -> Area {
+    pub fn footprint(proto: &EntityProto, position: MapPosition, direction: Direction) -> Area {
         let (w, h) = proto.tile_size(direction);
         let half_w = w * SUBTILES_PER_TILE / 2;
         let half_h = h * SUBTILES_PER_TILE / 2;

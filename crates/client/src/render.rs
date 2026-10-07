@@ -392,13 +392,15 @@ fn draw_ghost(
     assets: Res<AssetServer>,
     cursor: Res<Cursor>,
     mouse: Res<crate::controls::MouseWorld>,
+    ui: Res<crate::controls::UiState>,
     mut sprites: ResMut<Sprites>,
-    mut ghost: Query<(Entity, &mut Sprite, &mut Transform), With<Ghost>>,
+    mut ghosts: Query<(Entity, &mut Sprite, &mut Transform), With<Ghost>>,
 ) {
     let db = sim.0.prototypes();
-    let target = cursor.item.and_then(|i| db.item(i).place_result).zip(mouse.0);
+    let held = sim.0.player(LOCAL_PLAYER).and_then(|p| p.character.as_ref()).and_then(|c| c.cursor);
+    let target = held.and_then(|s| db.item(s.item).place_result).zip(mouse.0).filter(|_| !ui.pointer_over_ui);
     let Some((entity, at)) = target else {
-        for (e, _, _) in ghost.iter() {
+        for (e, _, _) in ghosts.iter() {
             commands.entity(e).despawn();
         }
         return;
@@ -410,31 +412,53 @@ fn draw_ghost(
     let name = proto.name.clone();
     let d = data.0.clone();
     let di = dir_index(dir);
-    let look = if matches!(proto.data, EntityData::TransportBelt { .. }) {
+    // Every non-shadow layer, first animation frame, like the game's placement preview.
+    let layers: Vec<Loaded> = if matches!(proto.data, EntityData::TransportBelt { .. }) {
         let index = format!("{}_index", dir_name(dir));
-        sprites.get(&assets, &data, &format!("belt:{name}:{index}:0"), || {
-            factorio_data::sprite::belt_sheet(&d, &name).map(|s| s.frame(&index, 0))
-        })
+        sprites
+            .get(&assets, &data, &format!("belt:{name}:{index}:0"), || {
+                factorio_data::sprite::belt_sheet(&d, &name).map(|s| s.frame(&index, 0))
+            })
+            .into_iter()
+            .collect()
     } else {
-        sprites.get(&assets, &data, &format!("ent:{name}:{di}"), || {
-            factorio_data::sprite::entity_sprite_dir(&d, &name, di)
-        })
+        let l: Vec<Loaded> = factorio_data::sprite::entity_layers(&d, &name, di, 0, false)
+            .into_iter()
+            .filter(|(_, k)| *k == LayerKind::Normal)
+            .map(|(sprite, _)| Loaded { image: assets.load(crate::sprites::asset_path(&data, &sprite.path)), sprite })
+            .collect();
+        if l.is_empty() {
+            sprites
+                .get(&assets, &data, &format!("ent:{name}:{di}"), || {
+                    factorio_data::sprite::entity_sprite_dir(&d, &name, di)
+                })
+                .into_iter()
+                .collect()
+        } else {
+            l
+        }
     };
     let pos = map_to_world(snapped);
     let color = if ok { Color::srgba(0.6, 1.0, 0.6, 0.6) } else { Color::srgba(1.0, 0.3, 0.3, 0.6) };
-    let (mut sprite, shift) = match look {
-        Some(l) => (l.sprite(), l.shift()),
-        None => (Sprite::from_color(Color::WHITE, Vec2::splat(TILE)), Vec2::ZERO),
-    };
-    sprite.color = color;
-    let at = pos + shift;
-    match ghost.single_mut() {
-        Ok((_, mut s, mut tf)) => {
-            *s = sprite;
-            tf.translation = Vec3::new(at.x, at.y, 50.0);
-        }
-        Err(_) => {
-            commands.spawn((Ghost, sprite, Transform::from_xyz(at.x, at.y, 50.0)));
+    let mut existing: Vec<(Entity, Mut<Sprite>, Mut<Transform>)> = ghosts.iter_mut().collect();
+    while existing.len() > layers.len() {
+        let (e, _, _) = existing.pop().unwrap();
+        commands.entity(e).despawn();
+    }
+    for (i, l) in layers.iter().enumerate() {
+        let at = pos + l.shift();
+        let z = 50.0 + i as f32 * 0.001;
+        match existing.get_mut(i) {
+            Some((_, s, tf)) => {
+                l.apply(s);
+                s.color = color;
+                tf.translation = Vec3::new(at.x, at.y, z);
+            }
+            None => {
+                let mut sprite = l.sprite();
+                sprite.color = color;
+                commands.spawn((Ghost, sprite, Transform::from_xyz(at.x, at.y, z)));
+            }
         }
     }
 }
