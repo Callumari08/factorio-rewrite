@@ -132,7 +132,7 @@ fn fail(e: &factorio_data::Error) -> ! {
 fn setup_camera(mut commands: Commands) {
     commands.spawn((
         Camera2d,
-        Projection::Orthographic(OrthographicProjection { scale: 0.75, ..OrthographicProjection::default_2d() }),
+        Projection::Orthographic(OrthographicProjection { scale: 1.0, ..OrthographicProjection::default_2d() }),
     ));
 }
 

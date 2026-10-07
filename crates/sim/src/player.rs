@@ -423,7 +423,13 @@ fn walk(sim: &mut Simulation, player: u16) {
     };
     let diag = sx != 0 && sy != 0;
     let step = if diag { speed * DIAGONAL } else { speed };
-    let (dx, dy) = (step.mul_int(sx), step.mul_int(sy));
+    // Positions are whole 1/256 tiles, so each step is truncated to that grid: 0.15 tiles
+    // per tick becomes 38/256, i.e. 8.9 tiles/s as in the game.
+    let quantise = |v: Fixed| {
+        let sub = (v.raw() * SUBTILES_PER_TILE as i64) >> Fixed::FRAC_BITS;
+        Fixed::from_ratio(sub, SUBTILES_PER_TILE as i64)
+    };
+    let (dx, dy) = (quantise(step).mul_int(sx), quantise(step).mul_int(sy));
     let proto = c.proto;
     let (x, y) = (c.x, c.y);
     // Try the full move, then slide along each axis.

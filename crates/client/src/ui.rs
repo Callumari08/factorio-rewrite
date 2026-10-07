@@ -423,6 +423,33 @@ fn entity_panel(
     commands.entity(root).despawn_related::<Children>();
     commands.entity(root).with_children(|p| {
         label(p, proto.name.clone(), 18.0);
+        // Power: what the machine drew last tick against its maximum.
+        let kw = |e: factorio_sim::Fixed| e.to_f64_lossy() * 60.0 / 1000.0;
+        let max = factorio_sim::power::electric_buffer_capacity(proto);
+        match proto.energy_source() {
+            Some(factorio_sim::proto::EnergySource::Electric { .. }) => {
+                let used = sim.0.power.last_consumption.get(&id).copied().unwrap_or_default();
+                let net = sim.0.power.electric_network_of.get(&id).map(|n| &sim.0.power.electric_networks[*n]);
+                let status = match net {
+                    None => "not connected to a power network".to_owned(),
+                    Some(n) => format!("network satisfaction {:.0}%", n.satisfaction().to_f64_lossy() * 100.0),
+                };
+                label(p, format!("Power: {:.1} kW of {:.1} kW max  ({status})", kw(used), kw(max)), 14.0);
+            }
+            Some(factorio_sim::proto::EnergySource::Burner { .. }) => {
+                let usage = match &proto.data {
+                    EntityData::MiningDrill { energy_usage, .. } | EntityData::CraftingMachine { energy_usage, .. } => {
+                        Some(*energy_usage)
+                    }
+                    EntityData::Boiler { energy_consumption, .. } => Some(*energy_consumption),
+                    _ => None,
+                };
+                if let Some(u) = usage {
+                    label(p, format!("Burns fuel at {:.0} kW while working", kw(u)), 14.0);
+                }
+            }
+            _ => {}
+        }
         let fuel = |p: &mut ChildSpawnerCommands, sprites: &mut Sprites, energy: &factorio_sim::energy::EnergyState| {
             if let Some(b) = energy.burner() {
                 label(p, format!("Fuel (burning: {:.0} kJ left)", b.remaining.to_f64_lossy() / 1000.0), 14.0);

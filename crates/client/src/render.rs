@@ -52,6 +52,17 @@ fn dir_name(d: Direction) -> &'static str {
     ["north", "east", "south", "west"][d.cardinal_index()]
 }
 
+/// Row of the belt sheet for a belt's direction and shape. Rows are named after the side
+/// items enter from: a belt facing north fed from the west (a left turn) is `west_to_north`.
+pub fn belt_row_name(direction: Direction, shape: BeltShape) -> String {
+    let from = match shape {
+        BeltShape::Straight => return format!("{}_index", dir_name(direction)),
+        BeltShape::CurveLeft => direction.rotate_ccw(),
+        BeltShape::CurveRight => direction.rotate_cw(),
+    };
+    format!("{}_to_{}_index", dir_name(from), dir_name(direction))
+}
+
 /// Sprite key and lookup for an entity in its current state.
 fn entity_look(
     sim: &Sim,
@@ -71,15 +82,7 @@ fn entity_look(
             let b = sim.0.belts.get(id)?;
             match b.kind {
                 BeltKind::Belt => {
-                    let from = match b.shape {
-                        BeltShape::Straight => None,
-                        BeltShape::CurveLeft => Some(b.direction.rotate_cw()),
-                        BeltShape::CurveRight => Some(b.direction.rotate_ccw()),
-                    };
-                    let index = match from {
-                        None => format!("{}_index", dir_name(b.direction)),
-                        Some(f) => format!("{}_to_{}_index", dir_name(f), dir_name(b.direction)),
-                    };
+                    let index = belt_row_name(b.direction, b.shape);
                     let frame = ((tick as i64 * b.speed as i64 / 16) % 16) as u32;
                     let key = format!("belt:{name}:{index}:{frame}");
                     let l = sprites.get(assets, data, &key, || {
@@ -378,4 +381,19 @@ fn follow_camera(sim: Res<Sim>, mut cam: Query<&mut Transform, With<Camera2d>>) 
     let p = map_to_world(c.position());
     tf.translation.x = p.x;
     tf.translation.y = p.y;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn curve_rows_name_the_entry_side() {
+        // Items going east that turn north (fed from the west side): a left turn.
+        assert_eq!(belt_row_name(Direction::NORTH, BeltShape::CurveLeft), "west_to_north_index");
+        // Items going west that turn north (fed from the east side): a right turn.
+        assert_eq!(belt_row_name(Direction::NORTH, BeltShape::CurveRight), "east_to_north_index");
+        assert_eq!(belt_row_name(Direction::EAST, BeltShape::CurveLeft), "north_to_east_index");
+        assert_eq!(belt_row_name(Direction::SOUTH, BeltShape::Straight), "south_index");
+    }
 }

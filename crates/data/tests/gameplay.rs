@@ -670,3 +670,33 @@ fn freeplay_start_with_player_inputs_only() {
     input(&mut sim, InputAction::SetMining(Some(at(2, 1))));
     ticks_until(&mut sim, 1000, |s| inventory_count(s, "stone-furnace") == 1);
 }
+
+#[test]
+fn character_runs_8_9_tiles_per_second() {
+    let d = game!();
+    let mut sim = flat_world(d);
+    let start = sim.player(0).unwrap().character.as_ref().unwrap().position();
+    input(&mut sim, InputAction::SetWalking(Some(Direction::EAST)));
+    for _ in 0..59 {
+        sim.step(&[]);
+    }
+    let end = sim.player(0).unwrap().character.as_ref().unwrap().position();
+    // 0.15 tiles/tick truncated to 38/256: 60 ticks = 2280/256 = 8.906 tiles.
+    assert_eq!(end.x - start.x, 38 * 60);
+    assert_eq!(end.y, start.y);
+}
+
+#[test]
+fn diagonal_walking_is_normalised() {
+    let d = game!();
+    let mut sim = flat_world(d);
+    let start = sim.player(0).unwrap().character.as_ref().unwrap().position();
+    input(&mut sim, InputAction::SetWalking(Some(Direction(6))));
+    for _ in 0..59 {
+        sim.step(&[]);
+    }
+    let end = sim.player(0).unwrap().character.as_ref().unwrap().position();
+    // 0.15 × cos 45° = 0.106 tiles/tick per axis, truncated to 27/256.
+    assert_eq!(end.x - start.x, 27 * 60);
+    assert_eq!(end.y - start.y, 27 * 60);
+}

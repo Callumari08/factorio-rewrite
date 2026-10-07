@@ -109,6 +109,8 @@ pub struct PowerSystem {
     pub fluid_network_of: BTreeMap<(EntityId, usize), usize>,
     pub electric_networks: Vec<ElectricNetwork>,
     pub electric_network_of: BTreeMap<EntityId, usize>,
+    /// Energy delivered to each electric consumer last tick (joules), for display.
+    pub last_consumption: BTreeMap<EntityId, Energy>,
 }
 
 impl PowerSystem {
@@ -409,6 +411,7 @@ pub(crate) fn update(sim: &mut Simulation) {
     }
 
     // Electricity.
+    sim.power.last_consumption.clear();
     let mut enets = std::mem::take(&mut sim.power.electric_networks);
     for en in enets.iter_mut() {
         let mut demand = Fixed::ZERO;
@@ -467,6 +470,7 @@ pub(crate) fn update(sim: &mut Simulation) {
                 if let Some(buf) = electric_buffer(&mut e.state) {
                     *buf += w * sat;
                 }
+                sim.power.last_consumption.insert(id, w * sat);
             }
         }
         let load = if supply.is_positive() { given / supply } else { Fixed::ZERO };

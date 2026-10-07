@@ -38,6 +38,11 @@ pub fn build(sim: &mut Simulation) {
     for x in o.x - 6..=o.x + 3 {
         place("transport-belt", x, o.y - 1, Direction::WEST);
     }
+    // The line ends in a right turn (west → north) and then a left turn (north → west).
+    place("transport-belt", o.x - 7, o.y - 1, Direction::NORTH);
+    place("transport-belt", o.x - 7, o.y - 2, Direction::NORTH);
+    place("transport-belt", o.x - 7, o.y - 3, Direction::WEST);
+    place("transport-belt", o.x - 8, o.y - 3, Direction::WEST);
     place("burner-inserter", o.x - 4, o.y - 2, Direction::SOUTH);
     place("stone-furnace", o.x - 5, o.y - 4, Direction::NORTH);
     place("burner-inserter", o.x - 4, o.y - 5, Direction::SOUTH);
