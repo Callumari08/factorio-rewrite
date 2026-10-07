@@ -196,6 +196,16 @@ impl Simulation {
             let _ = self.place_entity(entity, position, direction);
             return;
         }
+        if let InputAction::CheatSetRecipe { position, recipe } = input.action {
+            if let Some(id) = self.entity_at(position)
+                && let Some(e) = self.entities.get_mut(&id)
+                && let EntityState::Crafter(c) = &mut e.state
+            {
+                let db = self.db.clone();
+                c.set_recipe(&db, db.entity(e.proto), Some(recipe));
+            }
+            return;
+        }
         if let InputAction::CheatInsert { position, item, count } = input.action {
             if let Some(id) = self.entity_at(position) {
                 self.insert_into_entity(id, item, count, InsertSource::Player);

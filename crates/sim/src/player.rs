@@ -252,7 +252,10 @@ pub(crate) fn apply_input(sim: &mut Simulation, player: u16, action: &InputActio
         }
         InputAction::PickupItems => pickup_items(sim, player, st.item_pickup_distance),
         InputAction::CheatItems { item, count } => give(sim, player, item, count),
-        InputAction::JoinGame | InputAction::CheatPlaceEntity { .. } | InputAction::CheatInsert { .. } => {}
+        InputAction::JoinGame
+        | InputAction::CheatPlaceEntity { .. }
+        | InputAction::CheatInsert { .. }
+        | InputAction::CheatSetRecipe { .. } => {}
     }
 }
 

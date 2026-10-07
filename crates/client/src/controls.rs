@@ -49,10 +49,16 @@ fn open_from_env(sim: Res<Sim>, mut ui: ResMut<UiState>) {
         return;
     }
     ui.inventory_open = true;
+    // `FACTORIO_REWRITE_UI=power` opens a pole (the network window) instead of a machine.
+    let power = std::env::var("FACTORIO_REWRITE_UI").is_ok_and(|v| v == "power");
     ui.opened = sim
         .0
         .entities()
-        .find(|(_, e)| matches!(e.state, factorio_sim::world::EntityState::Crafter(_)))
+        .find(|(_, e)| match e.state {
+            factorio_sim::world::EntityState::Pole => power,
+            factorio_sim::world::EntityState::Crafter(_) => !power,
+            _ => false,
+        })
         .map(|(_, e)| e.position);
 }
 

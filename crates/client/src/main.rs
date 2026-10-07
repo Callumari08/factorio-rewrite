@@ -5,6 +5,7 @@
 // Bevy systems naturally take many parameters and complex query types.
 #![allow(clippy::too_many_arguments, clippy::type_complexity)]
 
+mod chart;
 mod controls;
 mod demo;
 mod render;
@@ -106,6 +107,7 @@ fn main() -> AppExit {
         .insert_resource(Cursor { item: None, direction: Direction::NORTH })
         .init_resource::<PendingInputs>()
         .add_plugins((
+            chart::ChartPlugin,
             sprites::SpritesPlugin,
             terrain::TerrainPlugin,
             render::RenderPlugin,

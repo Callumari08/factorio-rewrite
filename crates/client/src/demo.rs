@@ -56,4 +56,58 @@ pub fn build(sim: &mut Simulation) {
         fuel.push(PlayerInput::new(0, InputAction::CheatInsert { position, item: coal, count: 10 }));
     }
     sim.step(&fuel);
+    build_power(sim);
+}
+
+/// Steam power on the nearest shore where the layout fits: offshore pump facing north
+/// into the water, boiler and steam engine behind it, a pole and an assembler on gears.
+fn build_power(sim: &mut Simulation) {
+    let db = sim.prototypes_arc();
+    let id = |n: &str| db.entity_id(n);
+    let (Some(pump), Some(boiler), Some(engine), Some(pole), Some(asm)) =
+        (id("offshore-pump"), id("boiler"), id("steam-engine"), id("small-electric-pole"), id("assembling-machine-1"))
+    else {
+        return;
+    };
+    let pos = |e, x, y, d| db.entity(e).position_for_tile(TilePosition::new(x, y), d);
+    let mut spot = None;
+    'search: for r in 0..60i32 {
+        for y in -r..=r {
+            for x in -r..=r {
+                if x.abs() != r && y.abs() != r {
+                    continue;
+                }
+                let fits = sim.can_place(pump, pos(pump, x, y, Direction::NORTH), Direction::NORTH).is_ok()
+                    && sim.can_place(boiler, pos(boiler, x, y + 1, Direction::EAST), Direction::EAST).is_ok()
+                    && sim.can_place(engine, pos(engine, x + 2, y + 1, Direction::EAST), Direction::EAST).is_ok()
+                    && sim.can_place(asm, pos(asm, x + 2, y + 5, Direction::NORTH), Direction::NORTH).is_ok();
+                if fits {
+                    spot = Some((x, y));
+                    break 'search;
+                }
+            }
+        }
+    }
+    let Some((x, y)) = spot else { return };
+    let place = |e, tx, ty, d| {
+        PlayerInput::new(0, InputAction::CheatPlaceEntity { entity: e, position: pos(e, tx, ty, d), direction: d })
+    };
+    sim.step(&[
+        place(pump, x, y, Direction::NORTH),
+        place(boiler, x, y + 1, Direction::EAST),
+        place(engine, x + 2, y + 1, Direction::EAST),
+        place(pole, x + 3, y + 4, Direction::NORTH),
+        place(asm, x + 2, y + 5, Direction::NORTH),
+    ]);
+    let (Some(coal), Some(plate), Some(gear)) =
+        (db.item_id("coal"), db.item_id("iron-plate"), db.recipe_id("iron-gear-wheel"))
+    else {
+        return;
+    };
+    let at = |tx, ty| MapPosition::tile_center(TilePosition::new(tx, ty));
+    sim.step(&[
+        PlayerInput::new(0, InputAction::CheatInsert { position: at(x, y + 1), item: coal, count: 50 }),
+        PlayerInput::new(0, InputAction::CheatSetRecipe { position: at(x + 3, y + 6), recipe: gear }),
+    ]);
+    sim.step(&[PlayerInput::new(0, InputAction::CheatInsert { position: at(x + 3, y + 6), item: plate, count: 100 })]);
 }

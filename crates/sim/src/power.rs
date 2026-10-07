@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use crate::energy::EnergyState;
 use crate::fixed::Fixed;
 use crate::map::{Direction, MapPosition, SUBTILES_PER_TILE, TilePosition};
-use crate::proto::{Energy, EnergySource, EntityData, EntityProto, FluidBoxProto, FluidId, PrototypeDb};
+use crate::proto::{Energy, EnergySource, EntityData, EntityProto, EntityProtoId, FluidBoxProto, FluidId, PrototypeDb};
 use crate::world::{EntityId, EntityState, Simulation};
 
 type Connection = (usize, TilePosition, Direction, Option<u32>);
@@ -102,6 +102,71 @@ impl ElectricNetwork {
     }
 }
 
+/// Average power per entity type over one sample period, in joules per tick.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PowerSample {
+    pub consumption: BTreeMap<EntityProtoId, Energy>,
+    pub production: BTreeMap<EntityProtoId, Energy>,
+}
+
+impl PowerSample {
+    pub fn total_consumption(&self) -> Energy {
+        self.consumption.values().fold(Fixed::ZERO, |a, b| a + *b)
+    }
+    pub fn total_production(&self) -> Energy {
+        self.production.values().fold(Fixed::ZERO, |a, b| a + *b)
+    }
+    fn add(&mut self, o: &PowerSample) {
+        for (k, v) in &o.consumption {
+            *self.consumption.entry(*k).or_insert(Fixed::ZERO) += *v;
+        }
+        for (k, v) in &o.production {
+            *self.production.entry(*k).or_insert(Fixed::ZERO) += *v;
+        }
+    }
+    fn divided(&self, n: i64) -> PowerSample {
+        PowerSample {
+            consumption: self.consumption.iter().map(|(k, v)| (*k, v.div_int(n))).collect(),
+            production: self.production.iter().map(|(k, v)| (*k, v.div_int(n))).collect(),
+        }
+    }
+}
+
+/// Samples kept per time range, like the game's power graphs.
+pub const STAT_SAMPLES: usize = 300;
+/// Ticks per sample for the 5 s, 1 min and 10 min ranges.
+pub const STAT_PERIODS: [u32; 3] = [1, 12, 120];
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct StatSeries {
+    pub samples: std::collections::VecDeque<PowerSample>,
+    acc: PowerSample,
+    acc_ticks: u32,
+}
+
+/// Power history of one electric network, for the network window's graph.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NetworkStats {
+    pub series: [StatSeries; 3],
+}
+
+impl NetworkStats {
+    fn record(&mut self, tick: &PowerSample) {
+        for (series, period) in self.series.iter_mut().zip(STAT_PERIODS) {
+            series.acc.add(tick);
+            series.acc_ticks += 1;
+            if series.acc_ticks == period {
+                series.samples.push_back(series.acc.divided(period as i64));
+                if series.samples.len() > STAT_SAMPLES {
+                    series.samples.pop_front();
+                }
+                series.acc = PowerSample::default();
+                series.acc_ticks = 0;
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PowerSystem {
     dirty: bool,
@@ -111,6 +176,17 @@ pub struct PowerSystem {
     pub electric_network_of: BTreeMap<EntityId, usize>,
     /// Energy delivered to each electric consumer last tick (joules), for display.
     pub last_consumption: BTreeMap<EntityId, Energy>,
+    /// History per network, keyed by the network's first (lowest id) pole so it survives
+    /// rebuilds when buildings are added or removed.
+    pub stats: BTreeMap<EntityId, NetworkStats>,
+}
+
+impl PowerSystem {
+    /// Statistics for the network the entity (pole or machine) belongs to.
+    pub fn stats_for(&self, id: EntityId) -> Option<&NetworkStats> {
+        let n = self.electric_network_of.get(&id)?;
+        self.stats.get(self.electric_networks[*n].poles.first()?)
+    }
 }
 
 impl PowerSystem {
@@ -459,6 +535,7 @@ pub(crate) fn update(sim: &mut Simulation) {
             supply += energy;
             offers.push((*id, n, units, energy));
         }
+        let mut sample = PowerSample::default();
         let given = demand.min(supply);
         en.demand = demand;
         en.capacity = supply;
@@ -471,14 +548,20 @@ pub(crate) fn update(sim: &mut Simulation) {
                     *buf += w * sat;
                 }
                 sim.power.last_consumption.insert(id, w * sat);
+                *sample.consumption.entry(e.proto).or_insert(Fixed::ZERO) += w * sat;
             }
         }
         let load = if supply.is_positive() { given / supply } else { Fixed::ZERO };
         for (id, n, units, energy) in offers {
             nets[n].take(units * load);
-            if let EntityState::Fluid(f) = &mut sim.entities.get_mut(&id).unwrap().state {
+            let e = sim.entities.get_mut(&id).unwrap();
+            *sample.production.entry(e.proto).or_insert(Fixed::ZERO) += energy * load;
+            if let EntityState::Fluid(f) = &mut e.state {
                 f.last_power = energy * load;
             }
+        }
+        if let Some(first) = en.poles.first() {
+            sim.power.stats.entry(*first).or_default().record(&sample);
         }
     }
     sim.power.electric_networks = enets;

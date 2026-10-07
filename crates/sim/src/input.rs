@@ -36,6 +36,8 @@ pub enum InputAction {
     CheatPlaceEntity { entity: EntityProtoId, position: MapPosition, direction: Direction },
     /// Sandbox/testing: inserts items into the entity at the position without reach.
     CheatInsert { position: MapPosition, item: ItemId, count: u32 },
+    /// Sandbox/testing: sets a machine's recipe without reach.
+    CheatSetRecipe { position: MapPosition, recipe: RecipeId },
 }
 
 /// Inputs from one player for one tick.

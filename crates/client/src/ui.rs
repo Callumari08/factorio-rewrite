@@ -42,6 +42,7 @@ enum UiButton {
     GiveCursor,
     TakeAll,
     CancelCraft(u32),
+    ChartRange(usize),
 }
 
 const PANEL: Color = Color::srgb(0.12, 0.12, 0.12);
@@ -171,6 +172,7 @@ fn buttons(
     mut ui: ResMut<UiState>,
     mut cursor: ResMut<Cursor>,
     mut pending: ResMut<PendingInputs>,
+    mut chart: ResMut<crate::chart::Chart>,
 ) {
     let db = sim.0.prototypes();
     let Some(c) = character(&sim) else { return };
@@ -212,6 +214,7 @@ fn buttons(
                 }
             }
             (Interaction::Pressed, UiButton::CancelCraft(i)) => pending.push(InputAction::CancelCraft { index: *i }),
+            (Interaction::Pressed, UiButton::ChartRange(r)) => chart.range = *r,
             _ => {}
         }
     }
@@ -405,6 +408,8 @@ fn entity_panel(
     mut sprites: ResMut<Sprites>,
     mut root: Single<(Entity, &mut Node), With<EntityRoot>>,
     mut last: Local<String>,
+    chart: Res<crate::chart::Chart>,
+    mut images: ResMut<Assets<Image>>,
 ) {
     let entity = ui.opened.and_then(|p| sim.0.entity_at(p)).and_then(|id| sim.0.entity(id).map(|e| (id, e)));
     root.1.display = if entity.is_some() && ui.inventory_open { Display::Flex } else { Display::None };
@@ -414,7 +419,7 @@ fn entity_panel(
     // Rebuild a few times a second at most; progress text changes every tick.
     let fluid = sim.0.power.fluid_network_of.keys().filter(|(eid, _)| *eid == id).count();
     let sig = format!("{:?}{:?}{:?}{}", e.state, sim.0.belts.get(id).map(|b| b.item_count()), cursor.item, fluid);
-    let coarse = format!("{}{}", sig.len(), sim.0.tick() / 15);
+    let coarse = format!("{}{}{}", sig.len(), sim.0.tick() / 15, chart.range);
     if *last == coarse {
         return;
     }
@@ -538,6 +543,7 @@ fn entity_panel(
                 label(p, format!("Power: {:.0} kW", f.last_power.to_f64_lossy() * 60.0 / 1000.0), 14.0);
                 fuel(p, &mut sprites, &f.energy);
             }
+            EntityState::Pole => network_window(p, &sim, id, &chart, &mut images),
             EntityState::Belt => {
                 label(p, format!("{} items on belt", sim.0.belts.get(id).map(|b| b.item_count()).unwrap_or(0)), 14.0);
             }
@@ -597,4 +603,70 @@ fn queue_panel(
             );
         }
     });
+}
+
+fn network_window(
+    p: &mut ChildSpawnerCommands,
+    sim: &Sim,
+    id: factorio_sim::world::EntityId,
+    chart: &crate::chart::Chart,
+    images: &mut Assets<Image>,
+) {
+    use crate::chart::{PALETTE, PRODUCTION, power_text};
+    let db = sim.0.prototypes();
+    let Some(n) = sim.0.power.electric_network_of.get(&id).map(|n| &sim.0.power.electric_networks[*n]) else {
+        label(p, "Not connected", 14.0);
+        return;
+    };
+    label(
+        p,
+        format!(
+            "Satisfaction {:.0}%   Production {} / {} available",
+            n.satisfaction().to_f64_lossy() * 100.0,
+            power_text(n.production.to_f64_lossy()),
+            power_text(n.capacity.to_f64_lossy())
+        ),
+        14.0,
+    );
+    let Some(stats) = sim.0.power.stats_for(id) else { return };
+    crate::chart::draw(images, chart, stats);
+    p.spawn(Node { flex_direction: FlexDirection::Row, column_gap: Val::Px(4.0), ..default() }).with_children(|row| {
+        for (i, name) in ["5s", "1m", "10m"].iter().enumerate() {
+            let bg = if chart.range == i { SLOT_SELECTED } else { SLOT };
+            row.spawn((
+                UiButton::ChartRange(i),
+                Button,
+                Node { padding: UiRect::axes(Val::Px(6.0), Val::Px(2.0)), ..default() },
+                BackgroundColor(bg),
+            ))
+            .with_children(|b| label(b, *name, 13.0));
+        }
+    });
+    p.spawn((
+        ImageNode::new(chart.image.clone()),
+        Node { width: Val::Px(crate::chart::WIDTH as f32), height: Val::Px(crate::chart::HEIGHT as f32), ..default() },
+    ));
+    let last = stats.series[chart.range].samples.back().cloned().unwrap_or_default();
+    let swatch = |p: &mut ChildSpawnerCommands, c: [u8; 3], text: String| {
+        p.spawn(Node {
+            flex_direction: FlexDirection::Row,
+            column_gap: Val::Px(6.0),
+            align_items: AlignItems::Center,
+            ..default()
+        })
+        .with_children(|r| {
+            r.spawn((
+                Node { width: Val::Px(10.0), height: Val::Px(10.0), ..default() },
+                BackgroundColor(Color::srgb_u8(c[0], c[1], c[2])),
+            ));
+            label(r, text, 13.0);
+        });
+    };
+    for (pid, prod) in &last.production {
+        swatch(p, PRODUCTION, format!("{} (production): {}", db.entity(*pid).name, power_text(prod.to_f64_lossy())));
+    }
+    for (k, proto) in crate::chart::series_order(stats, chart.range).iter().enumerate() {
+        let v = last.consumption.get(proto).map_or(0.0, |v| v.to_f64_lossy());
+        swatch(p, PALETTE[k], format!("{}: {}", db.entity(*proto).name, power_text(v)));
+    }
 }
