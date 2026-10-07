@@ -8,6 +8,7 @@
 use std::collections::BTreeMap;
 
 use crate::fixed::Fixed;
+use crate::map::{MapPosition, SUBTILES_PER_TILE, TilePosition};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ItemProto {
@@ -47,6 +48,24 @@ pub struct EntityProto {
     pub collision_box: [[i32; 2]; 2],
     /// Belt speed in tiles per tick, for `transport-belt`-like prototypes.
     pub belt_speed: Option<Fixed>,
+}
+
+impl EntityProto {
+    /// Footprint in whole tiles, rounding the collision box up (a 0.8x0.8 box is 1x1).
+    pub fn tile_size(&self) -> (i32, i32) {
+        let [[l, t], [r, b]] = self.collision_box;
+        let tiles = |span: i32| ((span + SUBTILES_PER_TILE - 1) / SUBTILES_PER_TILE).max(1);
+        (tiles(r - l), tiles(b - t))
+    }
+
+    /// Where an entity covering the tile at `tile` (its top-left tile) is centred.
+    pub fn position_for_tile(&self, tile: TilePosition) -> MapPosition {
+        let (w, h) = self.tile_size();
+        MapPosition {
+            x: tile.x * SUBTILES_PER_TILE + w * SUBTILES_PER_TILE / 2,
+            y: tile.y * SUBTILES_PER_TILE + h * SUBTILES_PER_TILE / 2,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

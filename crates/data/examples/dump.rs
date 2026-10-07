@@ -38,6 +38,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(item) = db.items.get("coal") {
         println!("item coal: {item:?}");
     }
+    for e in ["transport-belt", "stone-furnace"] {
+        println!("{e} sprite: {:?}", factorio_data::sprite::entity_sprite(&data, e));
+    }
     let icon = factorio_data::sprite::item_icon(&data, "iron-plate");
     println!("iron-plate icon: {icon:?}");
     Ok(())

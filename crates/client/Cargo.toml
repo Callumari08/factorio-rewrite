@@ -1,0 +1,16 @@
+[package]
+name = "factorio-client"
+description = "Bevy front end: renders the simulation and turns player input into InputActions"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "factorio-rewrite"
+path = "src/main.rs"
+
+[dependencies]
+factorio-sim.workspace = true
+factorio-data.workspace = true
+bevy.workspace = true
+log.workspace = true
