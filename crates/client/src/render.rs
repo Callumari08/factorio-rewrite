@@ -5,6 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::f32::consts::TAU;
 
 use bevy::prelude::*;
+use factorio_data::sprite::LayerKind;
 use factorio_sim::belt::{BeltKind, BeltShape};
 use factorio_sim::map::Direction;
 use factorio_sim::proto::EntityData;
@@ -25,7 +26,7 @@ impl Plugin for RenderPlugin {
 }
 
 struct Mirrored {
-    main: Entity,
+    layers: Vec<Entity>,
     hand: Option<Entity>,
     key: String,
 }
@@ -63,8 +64,46 @@ pub fn belt_row_name(direction: Direction, shape: BeltShape) -> String {
     format!("{}_to_{}_index", dir_name(from), dir_name(direction))
 }
 
-/// Sprite key and lookup for an entity in its current state.
-fn entity_look(
+type Look = (String, Vec<(Loaded, LayerKind)>);
+
+/// Whether a machine is doing work right now (drives its animations).
+fn is_working(state: &EntityState) -> bool {
+    match state {
+        EntityState::Drill(d) => d.working,
+        EntityState::Crafter(c) => c.crafting,
+        EntityState::Fluid(f) => f.last_power.is_positive(),
+        _ => false,
+    }
+}
+
+/// Sprite layers for an entity in its current state, with a key that changes whenever
+/// the picture does.
+fn entity_look(sim: &Sim, data: &Data, sprites: &mut Sprites, assets: &AssetServer, id: EntityId) -> Option<Look> {
+    let single = |l: Option<(String, Loaded)>| l.map(|(k, l)| (k, vec![(l, LayerKind::Normal)]));
+    let e = sim.0.entity(id)?;
+    let is_belt_or_pipe = matches!(e.state, EntityState::Belt) || sim.0.prototypes().entity(e.proto).kind == "pipe";
+    if is_belt_or_pipe {
+        return single(entity_look_single(sim, data, sprites, assets, id));
+    }
+    let name = sim.0.prototypes().entity(e.proto).name.clone();
+    let di = dir_index(e.direction);
+    let working = is_working(&e.state);
+    let t = if working { sim.0.tick() } else { 0 };
+    let key = format!("layers:{name}:{di}:{working}:{t}");
+    let layers: Vec<(Loaded, LayerKind)> = factorio_data::sprite::entity_layers(&data.0, &name, di, t, working)
+        .into_iter()
+        .map(|(sprite, kind)| {
+            (Loaded { image: assets.load(crate::sprites::asset_path(data, &sprite.path)), sprite }, kind)
+        })
+        .collect();
+    if layers.is_empty() {
+        return single(entity_look_single(sim, data, sprites, assets, id));
+    }
+    Some((key, layers))
+}
+
+/// Single-sprite lookup for belts, pipes and anything without layered graphics.
+fn entity_look_single(
     sim: &Sim,
     data: &Data,
     sprites: &mut Sprites,
@@ -164,7 +203,9 @@ fn sync_entities(
     mirror.0.retain(|id, m| {
         let keep = live.contains(id);
         if !keep {
-            commands.entity(m.main).despawn();
+            for l in &m.layers {
+                commands.entity(*l).despawn();
+            }
             if let Some(h) = m.hand {
                 commands.entity(h).despawn();
             }
@@ -178,41 +219,64 @@ fn sync_entities(
         let pos = map_to_world(e.position);
         let look = entity_look(&sim, &data, &mut sprites, &assets, id);
         let layer = if matches!(e.state, EntityState::Belt) { -10.0 } else { 0.0 };
-        match mirror.0.get_mut(&id) {
-            None => {
-                let (key, sprite, shift) = match &look {
-                    Some((k, l)) => (k.clone(), l.sprite(), l.shift()),
-                    None => (
-                        String::new(),
-                        Sprite::from_color(Color::srgba(0.8, 0.2, 0.8, 0.8), Vec2::splat(TILE * 0.8)),
-                        Vec2::ZERO,
-                    ),
-                };
-                let at = pos + shift;
-                let main = commands.spawn((sprite, Transform::from_xyz(at.x, at.y, depth(pos.y, layer)))).id();
-                let hand = if let EntityData::Inserter { .. } = proto.data {
-                    let d = data.0.clone();
-                    let name = proto.name.clone();
-                    sprites
-                        .get(&assets, &data, &format!("hand:{name}"), || {
-                            factorio_data::sprite::inserter_hand(&d, &name).map(|h| h.0)
-                        })
-                        .map(|l| commands.spawn((l.sprite(), Transform::from_xyz(pos.x, pos.y, 5.0))).id())
-                } else {
-                    None
-                };
-                mirror.0.insert(id, Mirrored { main, hand, key });
-            }
-            Some(m) => {
-                if let Some((key, l)) = &look
-                    && *key != m.key
-                    && let Ok((mut sprite, mut tf)) = q.get_mut(m.main)
-                {
-                    l.apply(&mut sprite);
-                    let at = pos + l.shift();
-                    tf.translation = Vec3::new(at.x, at.y, depth(pos.y, layer));
-                    m.key = key.clone();
+        let entry = mirror.0.entry(id).or_insert_with(|| {
+            let hand = if let EntityData::Inserter { .. } = proto.data {
+                let d = data.0.clone();
+                let name = proto.name.clone();
+                sprites
+                    .get(&assets, &data, &format!("hand:{name}"), || {
+                        factorio_data::sprite::inserter_hand(&d, &name).map(|h| h.0)
+                    })
+                    .map(|l| commands.spawn((l.sprite(), Transform::from_xyz(pos.x, pos.y, 5.0))).id())
+            } else {
+                None
+            };
+            Mirrored { layers: Vec::new(), hand, key: String::new() }
+        });
+        let m = entry;
+        match &look {
+            Some((key, layers)) if *key != m.key => {
+                while m.layers.len() < layers.len() {
+                    m.layers.push(commands.spawn((Sprite::default(), Transform::default())).id());
                 }
+                while m.layers.len() > layers.len() {
+                    commands.entity(m.layers.pop().unwrap()).despawn();
+                }
+                for (i, ((l, kind), ent)) in layers.iter().zip(&m.layers).enumerate() {
+                    let at = pos + l.shift();
+                    let (z, color) = match kind {
+                        LayerKind::Shadow => (-3.0 + i as f32 * 1e-6, Color::srgba(0.0, 0.0, 0.0, 0.55)),
+                        LayerKind::Normal => (depth(pos.y, layer) + i as f32 * 1e-6, Color::WHITE),
+                    };
+                    match q.get_mut(*ent) {
+                        Ok((mut sprite, mut tf)) => {
+                            l.apply(&mut sprite);
+                            sprite.color = color;
+                            tf.translation = Vec3::new(at.x, at.y, z);
+                        }
+                        Err(_) => {
+                            // Freshly spawned this frame: insert the full components.
+                            let mut sprite = l.sprite();
+                            sprite.color = color;
+                            commands.entity(*ent).insert((sprite, Transform::from_xyz(at.x, at.y, z)));
+                        }
+                    }
+                }
+                m.key = key.clone();
+            }
+            None if m.layers.is_empty() => {
+                let e = commands
+                    .spawn((
+                        Sprite::from_color(Color::srgba(0.8, 0.2, 0.8, 0.8), Vec2::splat(TILE * 0.8)),
+                        Transform::from_xyz(pos.x, pos.y, depth(pos.y, 0.0)),
+                    ))
+                    .id();
+                m.layers.push(e);
+            }
+            _ => {}
+        }
+        {
+            {
                 // Inserter hand position from the arm's angle and length.
                 if let (Some(h), EntityState::Inserter(ins), EntityData::Inserter { pickup_position, .. }) =
                     (m.hand, &e.state, &proto.data)

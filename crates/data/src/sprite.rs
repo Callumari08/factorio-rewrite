@@ -324,3 +324,152 @@ pub fn underground_sprite(data: &GameData, name: &str, dir: usize, input: bool) 
     let layer = main_layer(proto.get("structure").get(key))?;
     sprite_from(data, layer, dir as u32, 0)
 }
+
+/// How a sprite layer is drawn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum LayerKind {
+    Normal,
+    Shadow,
+}
+
+/// Picks the animation frame shown at `t` (in ticks) for a layer.
+fn frame_at(layer: &RawValue, t: f64) -> u32 {
+    let n = layer.get("frame_count").as_i64().unwrap_or(1).max(1) as u64;
+    let speed = layer.get("animation_speed").as_f64().unwrap_or(1.0);
+    let f = (t * speed).floor().max(0.0) as u64;
+    let frame = match layer.get("run_mode").as_str() {
+        Some("forward-then-backward") if n > 1 => {
+            let period = 2 * n - 2;
+            let k = f % period;
+            if k < n { k } else { period - k }
+        }
+        Some("backward") => n - 1 - f % n,
+        _ => f % n,
+    };
+    frame as u32
+}
+
+/// A frame of one layer, handling single files, multi-file `filenames` and direction rows.
+fn layer_frame(data: &GameData, layer: &RawValue, frame: u32, row: u32) -> Option<SpriteRef> {
+    if let Some(files) = layer.get("filenames").as_array().first().map(|_| layer.get("filenames").as_array()) {
+        let size = layer.get("size");
+        let w = layer.get("width").as_i64().or(size.as_i64()).or(size.at(0).as_i64())? as u32;
+        let h = layer.get("height").as_i64().or(size.as_i64()).or(size.at(1).as_i64())? as u32;
+        let line = layer.get("line_length").as_i64().unwrap_or(1).max(1) as u32;
+        let lines = layer.get("lines_per_file").as_i64().unwrap_or(1).max(1) as u32;
+        let per_file = line * lines;
+        let file = files.get((frame / per_file) as usize)?.as_str()?;
+        let local = frame % per_file;
+        return Some(SpriteRef {
+            path: data.resolve_path(file)?,
+            x: (local % line) * w,
+            y: (local / line) * h,
+            width: w,
+            height: h,
+            scale: layer.get("scale").as_f64().unwrap_or(1.0),
+            shift: vector(layer.get("shift")),
+        });
+    }
+    sprite_from(data, layer, frame, row)
+}
+
+/// Flattens a sprite/animation node into its layers (descending into `layers`, `sheet`,
+/// `sheets`), with the frame and row to use for a cardinal direction.
+fn collect_layers<'a>(v: &'a RawValue, dir: usize, out: &mut Vec<(&'a RawValue, bool)>) {
+    if v.is_nil() {
+        return;
+    }
+    if !v.get(DIR_KEYS[0]).is_nil() {
+        return collect_layers(v.get(DIR_KEYS[dir]), dir, out);
+    }
+    if !v.get("layers").as_array().is_empty() {
+        for l in v.get("layers").as_array() {
+            collect_layers(l, dir, out);
+        }
+        return;
+    }
+    if !v.get("sheet").is_nil() {
+        out.push((v.get("sheet"), true));
+        return;
+    }
+    if let Some(s) = v.get("sheets").as_array().first() {
+        let _ = s;
+        for s in v.get("sheets").as_array() {
+            out.push((s, true));
+        }
+        return;
+    }
+    if !v.get("filename").is_nil() || !v.get("filenames").is_nil() {
+        out.push((v, false));
+    }
+}
+
+/// All layers of an entity's main graphics for a direction at tick `t`, plus its working
+/// visualisations while `working`. Glow/light layers are skipped.
+pub fn entity_layers(data: &GameData, name: &str, dir: usize, t: u64, working: bool) -> Vec<(SpriteRef, LayerKind)> {
+    let Some((kind, _, proto)) = data.prototypes_in_category("entity").find(|(_, n, _)| *n == name) else {
+        return Vec::new();
+    };
+    let gs = proto.get("graphics_set");
+    let root = if kind == "generator" {
+        proto.get(if dir % 2 == 1 { "horizontal_animation" } else { "vertical_animation" })
+    } else {
+        [
+            gs.get("animation"),
+            gs.get("idle_animation"),
+            proto.get("picture"),
+            proto.get("pictures"),
+            proto.get("animation"),
+            proto.get("structure"),
+            proto.get("platform_picture"),
+        ]
+        .into_iter()
+        .find(|v| !v.is_nil())
+        .unwrap_or(&RawValue::Nil)
+    };
+    let mut nodes = Vec::new();
+    collect_layers(root, dir, &mut nodes);
+    let mut extra = Vec::new();
+    for vis in gs.get("working_visualisations").as_array().iter().chain(proto.get("working_visualisations").as_array())
+    {
+        let always = vis.get("always_draw").as_bool() == Some(true);
+        if !(working || always) {
+            continue;
+        }
+        let key = format!("{}_animation", DIR_KEYS[dir]);
+        let anim = if vis.get(&key).is_nil() { vis.get("animation") } else { vis.get(&key) };
+        collect_layers(anim, dir, &mut extra);
+    }
+    nodes.extend(extra);
+
+    let tf = t as f64;
+    let mut out = Vec::new();
+    for (layer, four_way) in nodes {
+        if layer.get("draw_as_light").as_bool() == Some(true) || layer.get("draw_as_glow").as_bool() == Some(true) {
+            continue;
+        }
+        let direction_count = layer.get("direction_count").as_i64().unwrap_or(1);
+        let animated = layer.get("frame_count").as_i64().unwrap_or(1) > 1;
+        let (frame, row) = if four_way {
+            (dir as u32, 0)
+        } else {
+            let frame = if animated && working { frame_at(layer, tf) } else { 0 };
+            let row = if direction_count >= 4 { (dir as i64 * direction_count / 4) as u32 } else { 0 };
+            (frame, row)
+        };
+        // Animations with a direction_count lay out each direction as its own row block.
+        let frames_per_row_block = if direction_count >= 4 && !four_way {
+            let n = layer.get("frame_count").as_i64().unwrap_or(1).max(1) as u32;
+            let line = layer.get("line_length").as_i64().map(|l| l as u32).unwrap_or(n).max(1);
+            n.div_ceil(line)
+        } else {
+            1
+        };
+        let kind =
+            if layer.get("draw_as_shadow").as_bool() == Some(true) { LayerKind::Shadow } else { LayerKind::Normal };
+        if let Some(s) = layer_frame(data, layer, frame, row * frames_per_row_block) {
+            out.push((s, kind));
+        }
+    }
+    out
+}
