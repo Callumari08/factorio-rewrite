@@ -1,0 +1,13 @@
+/target
+**/*.rs.bk
+
+# Never commit Factorio game data, assets or derived dumps.
+# The game is loaded at runtime from the user's own install (see BUILDING.md).
+/factorio/
+/data/
+*.png
+*.ogg
+*.wav
+/dumps/
+factorio-rewrite.toml
+/screenshots/

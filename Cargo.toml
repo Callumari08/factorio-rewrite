@@ -1,0 +1,27 @@
+[workspace]
+resolver = "3"
+members = ["crates/sim", "crates/data", "crates/client"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Callumari08/factorio-rewrite"
+
+[workspace.dependencies]
+factorio-sim = { path = "crates/sim" }
+factorio-data = { path = "crates/data" }
+bevy = "0.18"
+mlua = { version = "0.12", features = ["lua52", "vendored"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.9"
+thiserror = "2"
+log = "0.4"
+
+# Bevy is slow in debug builds; optimise dependencies but keep our own code debuggable.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
