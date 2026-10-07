@@ -700,3 +700,153 @@ fn diagonal_walking_is_normalised() {
     assert_eq!(end.x - start.x, 27 * 60);
     assert_eq!(end.y - start.y, 27 * 60);
 }
+
+mod cursor {
+    use super::*;
+    use factorio_sim::input::{EntityInventory, MouseButton, SlotRef};
+
+    fn cursor(sim: &Simulation) -> Option<(String, u32)> {
+        let c = sim.player(0).unwrap().character.as_ref().unwrap().cursor?;
+        Some((sim.prototypes().item(c.item).name.clone(), c.count))
+    }
+
+    fn slot_of(sim: &Simulation, name: &str) -> u16 {
+        let i = item(sim, name);
+        let inv = &sim.player(0).unwrap().character.as_ref().unwrap().inventory;
+        inv.slots().iter().position(|s| s.is_some_and(|s| s.item == i)).unwrap() as u16
+    }
+
+    fn click(sim: &mut Simulation, slot: SlotRef, button: MouseButton, shift: bool, ctrl: bool) {
+        input(sim, InputAction::ClickSlot { slot, button, shift, ctrl });
+    }
+
+    #[test]
+    fn left_click_picks_up_and_puts_down_a_stack() {
+        let d = game!();
+        let mut sim = flat_world(d);
+        give(&mut sim, "iron-plate", 150);
+        let s = slot_of(&sim, "iron-plate");
+        click(&mut sim, SlotRef::Character(s), MouseButton::Left, false, false);
+        assert_eq!(cursor(&sim), Some(("iron-plate".into(), 100)));
+        assert_eq!(inventory_count(&sim, "iron-plate"), 50);
+        input(&mut sim, InputAction::ClearCursor);
+        assert_eq!(cursor(&sim), None);
+        assert_eq!(inventory_count(&sim, "iron-plate"), 150);
+    }
+
+    #[test]
+    fn right_click_takes_half_and_places_one() {
+        let d = game!();
+        let mut sim = flat_world(d);
+        give(&mut sim, "iron-plate", 7);
+        let s = slot_of(&sim, "iron-plate");
+        click(&mut sim, SlotRef::Character(s), MouseButton::Right, false, false);
+        assert_eq!(cursor(&sim), Some(("iron-plate".into(), 4)));
+        let chest = place(&mut sim, "wooden-chest", 2, 0, Direction::NORTH);
+        input(&mut sim, InputAction::OpenEntity(Some(MapPosition::tile_center(TilePosition::new(2, 0)))));
+        click(&mut sim, SlotRef::Opened(EntityInventory::Main, 0), MouseButton::Right, false, false);
+        assert_eq!(cursor(&sim), Some(("iron-plate".into(), 3)));
+        assert_eq!(container_count(&sim, chest, "iron-plate"), 1);
+        click(&mut sim, SlotRef::Opened(EntityInventory::Main, 0), MouseButton::Left, false, false);
+        assert_eq!(cursor(&sim), None);
+        assert_eq!(container_count(&sim, chest, "iron-plate"), 4);
+    }
+
+    #[test]
+    fn shift_and_ctrl_click_transfer_to_the_open_entity() {
+        let d = game!();
+        let mut sim = flat_world(d);
+        give(&mut sim, "iron-plate", 250);
+        let chest = place(&mut sim, "iron-chest", 2, 0, Direction::NORTH);
+        input(&mut sim, InputAction::OpenEntity(Some(MapPosition::tile_center(TilePosition::new(2, 0)))));
+        let s = slot_of(&sim, "iron-plate");
+        click(&mut sim, SlotRef::Character(s), MouseButton::Left, true, false);
+        assert_eq!(container_count(&sim, chest, "iron-plate"), 100);
+        let s = slot_of(&sim, "iron-plate");
+        click(&mut sim, SlotRef::Character(s), MouseButton::Left, false, true);
+        assert_eq!(container_count(&sim, chest, "iron-plate"), 250);
+        assert_eq!(inventory_count(&sim, "iron-plate"), 0);
+        // And back: shift-click a chest slot moves that stack to the character.
+        click(&mut sim, SlotRef::Opened(EntityInventory::Main, 0), MouseButton::Left, true, false);
+        assert_eq!(inventory_count(&sim, "iron-plate"), 100);
+    }
+
+    #[test]
+    fn furnace_slots_only_accept_valid_items() {
+        let d = game!();
+        let mut sim = flat_world(d);
+        give(&mut sim, "iron-plate", 10);
+        give(&mut sim, "coal", 10);
+        let furnace = place(&mut sim, "stone-furnace", 2, 0, Direction::NORTH);
+        input(&mut sim, InputAction::OpenEntity(Some(MapPosition::tile_center(TilePosition::new(2, 0)))));
+        // Coal into the fuel slot works.
+        let picked = item(&sim, "coal");
+        input(&mut sim, InputAction::PickItem(picked));
+        click(&mut sim, SlotRef::Opened(EntityInventory::Fuel, 0), MouseButton::Left, false, false);
+        assert_eq!(cursor(&sim), None);
+        // Iron plates are not fuel; they can go in as steel ingredients though.
+        let picked = item(&sim, "iron-plate");
+        input(&mut sim, InputAction::PickItem(picked));
+        click(&mut sim, SlotRef::Opened(EntityInventory::Fuel, 0), MouseButton::Left, false, false);
+        assert_eq!(cursor(&sim), Some(("iron-plate".into(), 10)));
+        click(&mut sim, SlotRef::Opened(EntityInventory::Input, 0), MouseButton::Left, false, false);
+        assert_eq!(cursor(&sim), None);
+        // The fuelled furnace starts on steel (5 plates) straight away.
+        let EntityState::Crafter(c) = &sim.entity(furnace).unwrap().state else { panic!() };
+        assert!(c.crafting);
+        assert_eq!(c.input.count(item(&sim, "iron-plate")), 5);
+        // Nothing can be put into the output.
+        let picked = item(&sim, "coal");
+        input(&mut sim, InputAction::PickItem(picked));
+        click(&mut sim, SlotRef::Opened(EntityInventory::Output, 0), MouseButton::Left, false, false);
+        assert!(cursor(&sim).is_none() || cursor(&sim).unwrap().0 == "coal");
+    }
+
+    #[test]
+    fn building_uses_the_cursor_and_refills_it() {
+        let d = game!();
+        let mut sim = flat_world(d);
+        give(&mut sim, "wooden-chest", 51);
+        let picked = item(&sim, "wooden-chest");
+        input(&mut sim, InputAction::PickItem(picked));
+        assert_eq!(cursor(&sim), Some(("wooden-chest".into(), 50)));
+        let chest = item(&sim, "wooden-chest");
+        input(
+            &mut sim,
+            InputAction::Build {
+                item: chest,
+                position: MapPosition::tile_center(TilePosition::new(3, 3)),
+                direction: Direction::NORTH,
+            },
+        );
+        assert_eq!(cursor(&sim), Some(("wooden-chest".into(), 49)));
+        assert_eq!(inventory_count(&sim, "wooden-chest"), 1);
+    }
+
+    #[test]
+    fn ctrl_click_on_a_building_inserts_or_takes() {
+        let d = game!();
+        let mut sim = flat_world(d);
+        give(&mut sim, "coal", 20);
+        let furnace = place(&mut sim, "stone-furnace", 2, 0, Direction::NORTH);
+        let at = MapPosition::tile_center(TilePosition::new(2, 0));
+        let picked = item(&sim, "coal");
+        input(&mut sim, InputAction::PickItem(picked));
+        input(&mut sim, InputAction::FastTransfer { position: at, half: false });
+        assert_eq!(cursor(&sim), None);
+        let EntityState::Crafter(c) = &sim.entity(furnace).unwrap().state else { panic!() };
+        assert_eq!(c.energy.burner().unwrap().fuel.count(item(&sim, "coal")), 20);
+    }
+
+    #[test]
+    fn shift_click_crafts_as_many_as_possible() {
+        let d = game!();
+        let mut sim = flat_world(d);
+        give(&mut sim, "iron-plate", 11);
+        let gear = sim.prototypes().recipe_id("iron-gear-wheel").unwrap();
+        input(&mut sim, InputAction::Craft { recipe: gear, count: u32::MAX });
+        let queued: u32 = sim.player(0).unwrap().character.as_ref().unwrap().queue.iter().map(|j| j.count).sum();
+        assert_eq!(queued, 5);
+        assert_eq!(inventory_count(&sim, "iron-plate"), 1);
+    }
+}

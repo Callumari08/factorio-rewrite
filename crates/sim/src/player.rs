@@ -12,7 +12,13 @@ use crate::world::{EntityId, EntityState, InsertSource, Simulation};
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Player {
     pub character: Option<Character>,
+    /// The entity whose window this player has open (Factorio's `player.opened`).
+    pub opened: Option<EntityId>,
+    /// Quickbar shortcuts: items, not storage (2 rows of 10).
+    pub quickbar: [Option<ItemId>; QUICKBAR_SLOTS],
 }
+
+pub const QUICKBAR_SLOTS: usize = 20;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum MiningTarget {
@@ -51,6 +57,8 @@ pub struct Character {
     pub queue: Vec<CraftJob>,
     /// Ticks of crafting done on the first job's current craft (at crafting speed 1).
     pub craft_progress: Fixed,
+    /// The stack held on the mouse cursor.
+    pub cursor: Option<ItemStack>,
 }
 
 struct CharacterStats {
@@ -105,6 +113,7 @@ impl Character {
             mining: None,
             queue: Vec::new(),
             craft_progress: Fixed::ZERO,
+            cursor: None,
         }
     }
 
@@ -174,7 +183,9 @@ pub(crate) fn apply_input(sim: &mut Simulation, player: u16, action: &InputActio
         }
         InputAction::Build { item, position, direction } => {
             let Some(entity) = db.item(item).place_result else { return };
-            if c.inventory.count(item) == 0 {
+            // Build from the cursor stack when it holds this item, else from the inventory.
+            let from_cursor = c.cursor.is_some_and(|s| s.item == item);
+            if !from_cursor && c.inventory.count(item) == 0 {
                 return;
             }
             let proto = db.entity(entity);
@@ -183,7 +194,11 @@ pub(crate) fn apply_input(sim: &mut Simulation, player: u16, action: &InputActio
                 return;
             }
             if sim.place_entity(entity, position, direction).is_ok() {
-                character_mut(sim, player).inventory.remove(item, 1);
+                if from_cursor {
+                    crate::cursor::consume_cursor_item(sim, player);
+                } else {
+                    character_mut(sim, player).inventory.remove(item, 1);
+                }
             }
         }
         InputAction::Rotate { position, reverse } => {
@@ -251,6 +266,27 @@ pub(crate) fn apply_input(sim: &mut Simulation, player: u16, action: &InputActio
             }
         }
         InputAction::PickupItems => pickup_items(sim, player, st.item_pickup_distance),
+        InputAction::OpenEntity(p) => {
+            let id = p.and_then(|p| sim.entity_at(p)).filter(|id| in_reach(sim, me, *id, st.reach_distance));
+            sim.players.get_mut(&player).unwrap().opened = id;
+        }
+        InputAction::ClickSlot { slot, button, shift, ctrl } => {
+            crate::cursor::click_slot(sim, player, slot, button, shift, ctrl);
+        }
+        InputAction::ClearCursor => crate::cursor::clear_cursor(sim, player),
+        InputAction::PickItem(item) => crate::cursor::pick_item(sim, player, item),
+        InputAction::SetQuickbar { index, item } => {
+            if let Some(slot) = sim.players.get_mut(&player).unwrap().quickbar.get_mut(index as usize) {
+                *slot = item;
+            }
+        }
+        InputAction::FastTransfer { position, half } => {
+            if let Some(id) = sim.entity_at(position)
+                && in_reach(sim, me, id, st.reach_distance)
+            {
+                crate::cursor::fast_transfer(sim, player, id, half);
+            }
+        }
         InputAction::CheatItems { item, count } => give(sim, player, item, count),
         InputAction::JoinGame
         | InputAction::CheatPlaceEntity { .. }
@@ -372,9 +408,32 @@ fn plan(
     true
 }
 
+/// How many crafts of `recipe` the inventory allows, including intermediates.
+pub fn max_craftable(db: &PrototypeDb, categories: &[String], inventory: &Inventory, recipe: RecipeId) -> u32 {
+    let feasible = |n: u32| {
+        let mut inv = inventory.contents();
+        plan(db, categories, recipe, n, &mut inv, &mut Vec::new(), 0)
+    };
+    if !feasible(1) {
+        return 0;
+    }
+    let (mut lo, mut hi) = (1u32, 2u32);
+    while hi < 100_000 && feasible(hi) {
+        lo = hi;
+        hi *= 2;
+    }
+    while hi - lo > 1 {
+        let mid = lo + (hi - lo) / 2;
+        if feasible(mid) { lo = mid } else { hi = mid }
+    }
+    lo
+}
+
 fn queue_craft(sim: &mut Simulation, player: u16, categories: &[String], recipe: RecipeId, count: u32) {
     let db = sim.db.clone();
     let c = character_mut(sim, player);
+    // `u32::MAX` means "as many as possible" (shift-click).
+    let count = if count == u32::MAX { max_craftable(&db, categories, &c.inventory, recipe) } else { count };
     let mut inv = c.inventory.contents();
     let mut jobs = Vec::new();
     if count == 0 || !plan(&db, categories, recipe, count, &mut inv, &mut jobs, 0) {
@@ -397,6 +456,15 @@ pub(crate) fn update(sim: &mut Simulation, player: u16) {
     walk(sim, player);
     mine(sim, player);
     craft(sim, player);
+    // Close the open window when its entity is gone or out of reach.
+    let me = sim.players[&player].character.as_ref().unwrap();
+    let reach = stats(&sim.db, me.proto).reach_distance;
+    let me = me.position();
+    if let Some(id) = sim.players[&player].opened
+        && (sim.entity(id).is_none() || !in_reach(sim, me, id, reach))
+    {
+        sim.players.get_mut(&player).unwrap().opened = None;
+    }
     // The character's main inventory is kept sorted, as in Factorio.
     let db = sim.db.clone();
     character_mut(sim, player).inventory.sort_and_merge(&db);

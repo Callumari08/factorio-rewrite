@@ -14,6 +14,7 @@
 //! This crate does not depend on Bevy or Lua; rendering and data loading live elsewhere.
 
 pub mod belt;
+pub mod cursor;
 pub mod energy;
 pub mod fixed;
 pub mod input;

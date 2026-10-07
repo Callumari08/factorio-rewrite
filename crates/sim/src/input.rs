@@ -6,6 +6,31 @@
 use crate::map::{Direction, MapPosition};
 use crate::proto::{EntityProtoId, ItemId, RecipeId};
 
+/// Which inventory of an entity a GUI slot belongs to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum EntityInventory {
+    /// A container's contents.
+    Main,
+    Fuel,
+    BurntResult,
+    /// A crafting machine's ingredients (furnace source).
+    Input,
+    Output,
+}
+
+/// A slot shown in the GUI: the character's main inventory or the opened entity's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SlotRef {
+    Character(u16),
+    Opened(EntityInventory, u16),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum MouseButton {
+    Left,
+    Right,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum InputAction {
     /// Creates the player's character near the spawn point if it has none.
@@ -30,6 +55,19 @@ pub enum InputAction {
     SetRecipe { position: MapPosition, recipe: Option<RecipeId> },
     /// Picks up items on the ground and on belts next to the character.
     PickupItems,
+    /// Opens (or with `None` closes) the window of the entity at the position.
+    OpenEntity(Option<MapPosition>),
+    /// A click on an inventory slot, with Factorio's cursor semantics.
+    ClickSlot { slot: SlotRef, button: MouseButton, shift: bool, ctrl: bool },
+    /// Puts the cursor stack back into the inventory (Q).
+    ClearCursor,
+    /// Takes a stack of the item from the inventory into the cursor (quickbar keys, pipette).
+    PickItem(ItemId),
+    /// Assigns (or clears) a quickbar slot.
+    SetQuickbar { index: u8, item: Option<ItemId> },
+    /// Ctrl+click on an entity in the world: insert the cursor stack, or with an empty cursor
+    /// take its output. `half` is Ctrl+right click.
+    FastTransfer { position: MapPosition, half: bool },
     /// Sandbox/testing: adds items to the character's inventory.
     CheatItems { item: ItemId, count: u32 },
     /// Sandbox/testing: places an entity without needing the item or reach.
