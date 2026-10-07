@@ -3,6 +3,7 @@ name = "factorio-data"
 description = "Locates a Factorio install and runs its Lua data stage to build prototypes"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [dependencies]
 factorio-sim.workspace = true
