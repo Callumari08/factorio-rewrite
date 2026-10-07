@@ -86,11 +86,33 @@ pub fn load_game_data(config: &Config) -> Result<GameData> {
     let loader = Loader::install(&lua, &install, &mods)?;
     loader.require_file(&lua, &install.data_dir.join("core/lualib/dataloader.lua"), "core")?;
     loader.run_stage(&lua, &DATA_STAGE)?;
+    // Like the engine, give every prototype without an explicit collision mask its type's
+    // default from the game's own `collision-mask-defaults.lua`.
+    loader.require_file(&lua, &install.data_dir.join("core/lualib/collision-mask-defaults.lua"), "core")?;
+    lua.load(FILL_COLLISION_MASKS_LUA).set_name("=fill-collision-masks").exec()?;
     let data: Table = lua.globals().get("data")?;
     let raw = RawValue::from_lua(&data.get::<Value>("raw")?);
 
     Ok(GameData { categories: defines::prototype_categories(&defines), install, mods, startup_settings, raw })
 }
+
+const FILL_COLLISION_MASKS_LUA: &str = r#"
+local defaults = require("__core__/lualib/collision-mask-defaults")
+for t, protos in pairs(data.raw) do
+  local d = defaults[t]
+  if d then
+    for _, p in pairs(protos) do
+      if p.collision_mask == nil then
+        local copy = { layers = {} }
+        for k in pairs(d.layers) do copy.layers[k] = true end
+        copy.not_colliding_with_itself = d.not_colliding_with_itself
+        copy.colliding_with_tiles_only = d.colliding_with_tiles_only
+        p.collision_mask = copy
+      end
+    end
+  end
+end
+"#;
 
 const STARTUP_SETTINGS_LUA: &str = r#"
 local startup = {}

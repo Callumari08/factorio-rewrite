@@ -1,4 +1,4 @@
-//! Loads the game data and prints a summary, or one prototype as JSON-ish debug output.
+//! Loads the game data and prints a summary, or one prototype.
 //!
 //!     cargo run -p factorio-data --example dump
 //!     cargo run -p factorio-data --example dump -- item iron-plate
@@ -26,22 +26,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let total: usize =
         data.raw.as_table().into_iter().flatten().map(|(_, v)| v.as_table().map_or(0, |t| t.len())).sum();
     println!("{types} prototype types, {total} prototypes");
-    println!("{} items, {} recipes, {} entities", db.items.len(), db.recipes.len(), db.entities.len());
-    for name in ["iron-plate", "transport-belt", "electronic-circuit"] {
-        if let Some(r) = db.recipes.get(name) {
-            println!("recipe {name}: {r:?}");
+    println!(
+        "{} items, {} fluids, {} recipes, {} entities, {} tiles, {} collision layers",
+        db.items.len(),
+        db.fluids.len(),
+        db.recipes.len(),
+        db.entities.len(),
+        db.tiles.len(),
+        db.collision_layers.len()
+    );
+    for name in [
+        "burner-mining-drill",
+        "stone-furnace",
+        "inserter",
+        "transport-belt",
+        "steam-engine",
+        "boiler",
+        "offshore-pump",
+    ] {
+        if let Some(id) = db.entity_id(name) {
+            println!("{:#?}", db.entity(id));
         }
     }
-    if let Some(belt) = db.entities.get("transport-belt") {
-        println!("entity transport-belt: {belt:?}");
-    }
-    if let Some(item) = db.items.get("coal") {
-        println!("item coal: {item:?}");
-    }
-    for e in ["transport-belt", "stone-furnace"] {
-        println!("{e} sprite: {:?}", factorio_data::sprite::entity_sprite(&data, e));
-    }
-    let icon = factorio_data::sprite::item_icon(&data, "iron-plate");
-    println!("iron-plate icon: {icon:?}");
+    let mapgen = factorio_data::mapgen::default_mapgen(&db, 0);
+    println!(
+        "mapgen: {} land tiles, resources: {:?}",
+        mapgen.land.len(),
+        mapgen.resources.iter().map(|r| &db.entity(r.resource).name).collect::<Vec<_>>()
+    );
     Ok(())
 }
