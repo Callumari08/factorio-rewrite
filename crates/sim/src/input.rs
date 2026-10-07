@@ -68,6 +68,11 @@ pub enum InputAction {
     /// Ctrl+click on an entity in the world: insert the cursor stack, or with an empty cursor
     /// take its output. `half` is Ctrl+right click.
     FastTransfer { position: MapPosition, half: bool },
+    /// Sandbox: a full stack of every item; what does not fit goes into chests placed
+    /// next to the character.
+    CheatAllItems,
+    /// Factorio's `/cheat`: instant crafting without ingredients.
+    SetCheatMode(bool),
     /// Sandbox/testing: adds items to the character's inventory.
     CheatItems { item: ItemId, count: u32 },
     /// Sandbox/testing: places an entity without needing the item or reach.

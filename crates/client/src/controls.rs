@@ -73,36 +73,6 @@ fn update_mouse_world(
     mouse.0 = window.cursor_position().and_then(|c| camera.viewport_to_world_2d(transform, c).ok()).map(world_to_map);
 }
 
-fn sandbox_kit(sim: &Sim, pending: &mut PendingInputs) {
-    let db = sim.0.prototypes();
-    for (name, count) in [
-        ("transport-belt", 400),
-        ("underground-belt", 20),
-        ("splitter", 10),
-        ("burner-mining-drill", 10),
-        ("electric-mining-drill", 10),
-        ("stone-furnace", 20),
-        ("burner-inserter", 20),
-        ("inserter", 50),
-        ("wooden-chest", 10),
-        ("iron-chest", 10),
-        ("coal", 200),
-        ("iron-plate", 200),
-        ("copper-plate", 200),
-        ("offshore-pump", 2),
-        ("boiler", 4),
-        ("steam-engine", 8),
-        ("small-electric-pole", 50),
-        ("pipe", 50),
-        ("pipe-to-ground", 10),
-        ("assembling-machine-1", 10),
-    ] {
-        if let Some(item) = db.item_id(name) {
-            pending.push(InputAction::CheatItems { item, count });
-        }
-    }
-}
-
 fn held_item(sim: &Sim) -> Option<factorio_sim::proto::ItemId> {
     sim.0.player(LOCAL_PLAYER).and_then(|p| p.character.as_ref()).and_then(|c| c.cursor).map(|c| c.item)
 }
@@ -212,9 +182,14 @@ fn keyboard(
     if keys.pressed(KeyCode::KeyF) {
         pending.push(InputAction::PickupItems);
     }
+    if keys.just_pressed(KeyCode::F2) {
+        let on = !sim.0.player(LOCAL_PLAYER).is_some_and(|p| p.cheat_mode);
+        pending.push(InputAction::SetCheatMode(on));
+        ui.status = if on { "Cheat mode on: crafting is instant and free" } else { "Cheat mode off" }.into();
+    }
     if keys.just_pressed(KeyCode::F1) {
-        sandbox_kit(&sim, &mut pending);
-        ui.status = "Sandbox kit added to inventory".into();
+        pending.push(InputAction::CheatAllItems);
+        ui.status = "Added a stack of every item (overflow in chests next to you)".into();
     }
 }
 

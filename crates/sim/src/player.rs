@@ -16,6 +16,8 @@ pub struct Player {
     pub opened: Option<EntityId>,
     /// Quickbar shortcuts: items, not storage (2 rows of 10).
     pub quickbar: [Option<ItemId>; QUICKBAR_SLOTS],
+    /// Factorio's `/cheat`: crafting is instant and needs no ingredients.
+    pub cheat_mode: bool,
 }
 
 pub const QUICKBAR_SLOTS: usize = 20;
@@ -274,6 +276,8 @@ pub(crate) fn apply_input(sim: &mut Simulation, player: u16, action: &InputActio
             crate::cursor::click_slot(sim, player, slot, button, shift, ctrl);
         }
         InputAction::ClearCursor => crate::cursor::clear_cursor(sim, player),
+        InputAction::CheatAllItems => cheat_all_items(sim, player),
+        InputAction::SetCheatMode(on) => sim.players.get_mut(&player).unwrap().cheat_mode = on,
         InputAction::PickItem(item) => crate::cursor::pick_item(sim, player, item),
         InputAction::SetQuickbar { index, item } => {
             if let Some(slot) = sim.players.get_mut(&player).unwrap().quickbar.get_mut(index as usize) {
@@ -292,6 +296,43 @@ pub(crate) fn apply_input(sim: &mut Simulation, player: u16, action: &InputActio
         | InputAction::CheatPlaceEntity { .. }
         | InputAction::CheatInsert { .. }
         | InputAction::CheatSetRecipe { .. } => {}
+    }
+}
+
+fn cheat_all_items(sim: &mut Simulation, player: u16) {
+    let db = sim.db.clone();
+    let mut overflow: Vec<ItemStack> = Vec::new();
+    for i in db.item_ids() {
+        let n = db.item(i).stack_size;
+        let got = character_mut(sim, player).inventory.insert(&db, i, n);
+        if got < n {
+            overflow.push(ItemStack::new(i, n - got));
+        }
+    }
+    // Biggest container by inventory size, placed on free tiles around the character.
+    let chest = db
+        .entity_ids()
+        .filter(|e| matches!(db.entity(*e).data, EntityData::Container { .. }) && db.entity(*e).tile_width == 1)
+        .max_by_key(|e| match db.entity(*e).data {
+            EntityData::Container { inventory_size } => (inventory_size, std::cmp::Reverse(*e)),
+            _ => (0, std::cmp::Reverse(*e)),
+        });
+    let Some(chest) = chest else { return };
+    let me = character_mut(sim, player).position().tile();
+    let mut spots = (1..20i32)
+        .flat_map(|r| (-r..=r).flat_map(move |dy| (-r..=r).map(move |dx| (dx, dy, r))))
+        .filter(|(dx, dy, r)| dx.abs() == *r || dy.abs() == *r);
+    while !overflow.is_empty() {
+        let Some((dx, dy, _)) = spots.next() else { return };
+        let at = MapPosition::tile_center(crate::map::TilePosition::new(me.x + dx, me.y + dy));
+        let Ok(id) = sim.place_entity(chest, at, Direction::NORTH) else { continue };
+        while let Some(s) = overflow.pop() {
+            let n = sim.insert_into_entity(id, s.item, s.count, InsertSource::Player);
+            if n < s.count {
+                overflow.push(ItemStack::new(s.item, s.count - n));
+                break;
+            }
+        }
     }
 }
 
@@ -431,6 +472,17 @@ pub fn max_craftable(db: &PrototypeDb, categories: &[String], inventory: &Invent
 
 fn queue_craft(sim: &mut Simulation, player: u16, categories: &[String], recipe: RecipeId, count: u32) {
     let db = sim.db.clone();
+    if sim.players[&player].cheat_mode {
+        // Instant and free; "craft all" gives one stack.
+        let count = if count == u32::MAX { 0 } else { count };
+        for p in &db.recipe(recipe).results {
+            if let (ItemOrFluid::Item(i), Some(n)) = (p.what, p.fixed_count()) {
+                let n = if count == 0 { db.item(i).stack_size } else { n * count };
+                give(sim, player, i, n);
+            }
+        }
+        return;
+    }
     let c = character_mut(sim, player);
     // `u32::MAX` means "as many as possible" (shift-click).
     let count = if count == u32::MAX { max_craftable(&db, categories, &c.inventory, recipe) } else { count };

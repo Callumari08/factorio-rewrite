@@ -48,7 +48,8 @@ and a pistol, next to patches of iron, copper, coal and stone.
 | `F` (hold) | Pick up items from the ground and nearby belts |
 | Recipe: left / right / `Shift`+click | Craft 1 / 5 / as many as possible. Click a queued craft (bottom left) to cancel it |
 | Mouse wheel | Zoom |
-| `F1` | Sandbox: add a kit of belts, inserters, drills, furnaces, power and plates |
+| `F1` | Sandbox: a full stack of every item (what doesn't fit goes into chests next to you) |
+| `F2` | Toggle cheat mode: crafting is instant and free (like the game's `/cheat`) |
 
 Buildings show their slots in their window: click with a held stack to put fuel, ore or
 ingredients in, and click the result slot to take output. Assemblers show a recipe chooser.

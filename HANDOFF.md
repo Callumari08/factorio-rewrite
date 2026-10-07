@@ -1,0 +1,46 @@
+# Handoff
+
+Read this first when picking the project up in a new session. See also
+[ROADMAP.md](ROADMAP.md) (plan), [BUILDING.md](BUILDING.md) (build, run, controls) and
+[README.md](README.md).
+
+## Current state (2026-10-08)
+
+- Steps 1, 2 and 2.5 are done. Step 3 item 1 (GUI parity) is done apart from the exact GUI
+  skin, drag-spreading items across slots, and the hover info panel.
+- **Next task: step 3 item 2, research.** Technologies from `data.raw.technology`, labs,
+  science packs, research queue, recipe unlocks (`effects` of type `unlock-recipe`),
+  bonuses, the tech tree GUI, and recipes starting locked (`RecipeProto.enabled` is already
+  loaded but ignored). The freeplay start should then match the game's unlocked recipes.
+- All tests pass: `cargo test --workspace` (sim unit tests, plus gameplay tests in
+  `crates/data/tests/` that load the real game and check values such as tick timings and
+  throughputs).
+
+## Crate map
+
+| Crate | What lives there |
+|-------|------------------|
+| `crates/sim` (`factorio-sim`) | All game rules. `world.rs` (Simulation, entities, building, checksum), `player.rs` (character, mining, crafting queue, inputs), `cursor.rs` (cursor stack, slot clicks), `machines.rs` (drills, furnaces/assemblers, inserters), `belt.rs` (lanes, curves, sideload, undergrounds, splitters), `power.rs` (fluid segments, electric networks, power stats), `surface.rs` + `noise.rs` (chunks, map generation), `proto.rs` (typed prototypes, ids), `input.rs` (every player action). |
+| `crates/data` (`factorio-data`) | Finds the install, orders mods, runs the Lua settings/data stages (`datastage.rs`), converts `data.raw` to typed prototypes (`typed.rs`), map-gen settings (`mapgen.rs`), sprite lookups (`sprite.rs`), locale names (`locale.rs`). |
+| `crates/client` (`factorio-client`, binary `factorio-rewrite`) | Bevy app: `main.rs` (setup, fixed 60 Hz tick), `controls.rs` (keys/mouse → inputs), `render.rs` (entities, layers, belts, items, ghost), `terrain.rs`, `ui.rs` (all GUI), `chart.rs` (power graph), `demo.rs`. |
+
+## Conventions (keep these)
+
+- **Determinism.** Sim: fixed 60 UPS, no floats in game logic (use `Fixed`, integer map
+  positions in 1/256 tiles), no HashMap iteration, no wall clock or threads, all changes via
+  `InputAction`s. Times are stored as exact ticks at load time (e.g. `mining_ticks`).
+- **Data-driven.** No base-game names in the sim; prototypes and categories come from the
+  game data (`defines.prototypes`, collision mask defaults, locale) so Space Age/mods work.
+- **Never commit game data.** Everything is read from the user's install at runtime.
+- **Parity is tested** against known game values; add a test for each mechanic.
+- **Visual checks:** short screenshot runs (`FACTORIO_REWRITE_SCREENSHOT=...png
+  FACTORIO_REWRITE_SCREENSHOT_AFTER=4`) are fine on Callum's desktop; keep them brief.
+- Send Callum short progress notes every few minutes during long work; small commits,
+  pushed to `main`.
+
+## Known gaps
+
+Research (next); exact GUI skin; tile transitions, lights, smoke; Factorio's noise-expression
+map generation, trees, rocks, cliffs, enemies, oil; inserters chasing belt items and real pole
+wiring; fluid recipes; trains, robots, circuits, combat; save/load; main menu; rebindable
+controls; sound; data-stage `pairs()` order and `math.random` are not identical to the game.

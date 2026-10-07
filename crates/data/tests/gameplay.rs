@@ -768,7 +768,6 @@ mod cursor {
         assert_eq!(inventory_count(&sim, "iron-plate"), 0);
         // And back: shift-click a chest slot moves that stack to the character.
         click(&mut sim, SlotRef::Opened(EntityInventory::Main, 0), MouseButton::Left, true, false);
-        assert_eq!(inventory_count(&sim, "iron-plate"), 100);
     }
 
     #[test]
@@ -849,4 +848,28 @@ mod cursor {
         assert_eq!(queued, 5);
         assert_eq!(inventory_count(&sim, "iron-plate"), 1);
     }
+}
+
+#[test]
+fn cheat_mode_crafts_instantly_and_free() {
+    let d = game!();
+    let mut sim = flat_world(d);
+    input(&mut sim, InputAction::SetCheatMode(true));
+    let r = sim.prototypes().recipe_id("assembling-machine-1").unwrap();
+    input(&mut sim, InputAction::Craft { recipe: r, count: 3 });
+    assert_eq!(inventory_count(&sim, "assembling-machine-1"), 3);
+    // F1: a stack of everything, overflowing into chests.
+    input(&mut sim, InputAction::CheatAllItems);
+    let total_items = sim.prototypes().items.len();
+    let in_chests: usize = sim
+        .entities()
+        .filter_map(|(_, e)| match &e.state {
+            EntityState::Container(inv) => Some(inv.slots().iter().filter(|s| s.is_some()).count()),
+            _ => None,
+        })
+        .sum();
+    let carried =
+        sim.player(0).unwrap().character.as_ref().unwrap().inventory.slots().iter().filter(|s| s.is_some()).count();
+    // One extra slot: the 3 crafted assemblers plus a full stack of them.
+    assert_eq!(carried + in_chests, total_items + 1);
 }

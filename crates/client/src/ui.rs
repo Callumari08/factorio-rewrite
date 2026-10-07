@@ -410,7 +410,7 @@ fn hud(
         lines.push(format!("{}  ({} remaining)", names.entity(r.proto), r.amount));
     }
     lines.push(
-        "E inventory  |  Q clear/pick  |  R rotate  |  F pick up  |  Ctrl+click fast transfer  |  F1 sandbox kit"
+        "E inventory  |  Q clear/pick  |  R rotate  |  F pick up  |  Ctrl+click fast transfer  |  F1 all items  |  F2 cheat mode"
             .into(),
     );
     texts.p0().0 = lines.join("\n");
@@ -704,10 +704,11 @@ fn window(
         return;
     }
     let db = sim.0.prototypes();
+    let cheat = sim.0.player(LOCAL_PLAYER).is_some_and(|p| p.cheat_mode);
     let entity_sig = opened.and_then(|id| sim.0.entity(id)).map(|e| format!("{:?}", e.state)).unwrap_or_default();
     let belt = opened.and_then(|id| sim.0.belts.get(id)).map(|b| b.item_count());
     let sig = format!(
-        "{:?}|{:?}|{}|{}|{}|{:?}|{}|{}",
+        "{:?}|{:?}|{}|{}|{}|{:?}|{}|{}|{cheat}",
         c.inventory,
         opened,
         entity_sig,
@@ -732,12 +733,12 @@ fn window(
         });
         match opened {
             Some(id) => panel(w, 420.0, |p| entity_panel(p, &mut ctx, &sim, &names, id, &local, &chart, &mut images)),
-            None => panel(w, SLOT_PX * 10.0 + 16.0, |p| crafting_panel(p, &mut ctx, &names, c, local.tab)),
+            None => panel(w, SLOT_PX * 10.0 + 16.0, |p| crafting_panel(p, &mut ctx, &names, c, local.tab, cheat)),
         }
     });
 }
 
-fn crafting_panel(p: &mut ChildSpawnerCommands, ctx: &mut Ctx, names: &Names, c: &Character, tab: usize) {
+fn crafting_panel(p: &mut ChildSpawnerCommands, ctx: &mut Ctx, names: &Names, c: &Character, tab: usize, cheat: bool) {
     let db = ctx.db;
     let cats = match &db.entity(c.proto).data {
         EntityData::Character { crafting_categories, .. } => crafting_categories.clone(),
@@ -801,7 +802,7 @@ fn crafting_panel(p: &mut ChildSpawnerCommands, ctx: &mut Ctx, names: &Names, c:
         }
         grid(p, 10, |g| {
             for r in recipes {
-                let can = max_craftable(db, &cats, &c.inventory, r);
+                let can = if cheat { 1 } else { max_craftable(db, &cats, &c.inventory, r) };
                 let main = db.recipe(r).results.first().and_then(|x| match x.what {
                     ItemOrFluid::Item(i) => Some(i),
                     _ => None,
