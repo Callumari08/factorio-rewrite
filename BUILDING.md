@@ -25,11 +25,39 @@ cargo run --release
 The first build takes a few minutes because it compiles Bevy. Plain `cargo run` (a debug
 build) also works and is quick enough, because dependencies are optimised even in debug.
 
-In the window: `1`-`5` choose an entity, left click places it, right click removes it,
-`WASD` pans and `Q`/`E` zoom. The overlay shows the tick count, measured UPS and the
-simulation checksum.
+See [Playing](#3-playing) for the controls.
 
-## 3. Pointing it at your Factorio install
+## 3. Playing
+
+You start like Factorio's freeplay: 8 iron plates, a burner mining drill, a stone furnace
+and a pistol, next to patches of iron, copper, coal and stone.
+
+| Input | Action |
+|-------|--------|
+| `W` `A` `S` `D` | Walk (diagonals too) |
+| Right mouse (hold) | Mine the building or resource under the cursor |
+| `E` | Open/close the inventory and crafting menu |
+| Click an inventory item | Hold it for building (click again to put it back) |
+| Left mouse | Build the held item (drag to build lines), or open a building's window |
+| `R` / `Shift`+`R` | Rotate the held item or the building under the cursor |
+| `Q` | Clear the held item, or pick the item for the building under the cursor |
+| `F` (hold) | Pick up items from the ground and nearby belts |
+| Click a recipe | Craft 1 (`Shift`+click: 5). Click a queued craft at the bottom to cancel it |
+| Mouse wheel | Zoom |
+| `F1` | Sandbox: add a kit of belts, inserters, drills, furnaces, power and plates |
+
+In a building's window, **Insert held item** moves the item you are holding into it (fuel,
+ore, ingredients); **Take all** takes its output. Assemblers show a recipe grid to choose from.
+
+Optional environment variables:
+
+- `FACTORIO_REWRITE_DEMO=1` builds a small burner factory (drills → belt → inserter →
+  furnace → inserter → chest) on the nearest iron patch.
+- `FACTORIO_REWRITE_SEED=1234` picks a different map.
+- `FACTORIO_REWRITE_SCREENSHOT=shot.png` (with `FACTORIO_REWRITE_SCREENSHOT_AFTER=10`)
+  saves a screenshot after that many seconds and exits.
+
+## 4. Pointing it at your Factorio install
 
 The game is looked up in this order:
 
@@ -58,7 +86,7 @@ $env:FACTORIO_PATH = "D:\SteamLibrary\steamapps\common\Factorio"; cargo run --re
 The loader also needs `doc-html/runtime-api.json` from the install, which comes with the
 Steam and standalone versions of the game. It supplies the `defines` table to the data stage.
 
-## 4. Checking that the data loads, without a window
+## 5. Checking that the data loads, without a window
 
 ```sh
 cargo run -p factorio-data --example dump
@@ -67,11 +95,14 @@ cargo run -p factorio-data --example dump -- recipe electronic-circuit
 
 This runs Factorio's data stage and prints prototype counts, or one prototype.
 
-## 5. Tests
+## 6. Tests
 
 ```sh
 cargo test --workspace
 ```
+
+The gameplay tests in `crates/data/tests/gameplay.rs` load your Factorio install and check
+timings and throughputs against the real game. Without an install they are skipped.
 
 ## Never commit game files
 
@@ -85,4 +116,4 @@ your commits too. Anything from the game install stays on your machine.
   validation layers installed on your system, not from this project. They are harmless and
   do not appear in release builds.
 - **Screenshots for bug reports**: `FACTORIO_REWRITE_SCREENSHOT=shot.png cargo run` saves a
-  screenshot after about three seconds and exits.
+  screenshot after four seconds and exits.

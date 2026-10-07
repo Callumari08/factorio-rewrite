@@ -135,7 +135,8 @@ impl Inventory {
     /// Merges stacks and orders them by item id, like Factorio's automatic sorting of the
     /// character's main inventory.
     pub fn sort_and_merge(&mut self, db: &PrototypeDb) {
-        let contents = self.contents();
+        let mut contents: Vec<(ItemId, u32)> = self.contents().into_iter().collect();
+        contents.sort_by_key(|(i, _)| (db.item(*i).sort_index, *i));
         let size = self.slots.len() as u32;
         *self = Inventory::new(size);
         for (item, count) in contents {

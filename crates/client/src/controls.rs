@@ -16,6 +16,7 @@ impl Plugin for ControlsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<MouseWorld>()
             .init_resource::<UiState>()
+            .add_systems(Startup, open_from_env)
             .add_systems(Update, (update_mouse_world, keyboard, mouse, zoom).chain());
     }
 }
@@ -39,6 +40,20 @@ struct ControlState {
     walking: Option<Direction>,
     mining_tile: Option<TilePosition>,
     last_build_tile: Option<TilePosition>,
+}
+
+/// `FACTORIO_REWRITE_UI=1` opens the inventory (and the first machine's window) at start,
+/// for screenshots.
+fn open_from_env(sim: Res<Sim>, mut ui: ResMut<UiState>) {
+    if std::env::var_os("FACTORIO_REWRITE_UI").is_none() {
+        return;
+    }
+    ui.inventory_open = true;
+    ui.opened = sim
+        .0
+        .entities()
+        .find(|(_, e)| matches!(e.state, factorio_sim::world::EntityState::Crafter(_)))
+        .map(|(_, e)| e.position);
 }
 
 fn update_mouse_world(

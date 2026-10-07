@@ -44,7 +44,7 @@ enum UiButton {
     CancelCraft(u32),
 }
 
-const PANEL: Color = Color::srgba(0.12, 0.12, 0.12, 0.92);
+const PANEL: Color = Color::srgb(0.12, 0.12, 0.12);
 const SLOT: Color = Color::srgb(0.25, 0.25, 0.25);
 const SLOT_SELECTED: Color = Color::srgb(0.65, 0.5, 0.15);
 
@@ -53,14 +53,14 @@ fn setup(mut commands: Commands) {
         HudText,
         Text::new(""),
         TextFont { font_size: 14.0, ..default() },
-        Node { position_type: PositionType::Absolute, top: Val::Px(8.0), left: Val::Px(8.0), ..default() },
+        Node { position_type: PositionType::Absolute, bottom: Val::Px(84.0), left: Val::Px(8.0), ..default() },
     ));
     commands.spawn((
         StatusText,
         Text::new(""),
         TextFont { font_size: 15.0, ..default() },
         TextColor(Color::srgb(1.0, 0.85, 0.5)),
-        Node { position_type: PositionType::Absolute, bottom: Val::Px(64.0), left: Val::Px(8.0), ..default() },
+        Node { position_type: PositionType::Absolute, bottom: Val::Px(52.0), left: Val::Px(8.0), ..default() },
     ));
     commands.spawn((
         InventoryRoot,
@@ -114,6 +114,28 @@ fn pointer_over_ui(q: Query<&Interaction>, mut ui: ResMut<UiState>) {
 
 fn character(sim: &Sim) -> Option<&Character> {
     sim.0.player(LOCAL_PLAYER).and_then(|p| p.character.as_ref())
+}
+
+/// Factorio's crafting menu order: item group, subgroup, then the recipe's own `order`
+/// (falling back to its main product's), then name.
+fn menu_order(data: &Data, db: &PrototypeDb, r: RecipeId) -> (String, String, String, String) {
+    let d = &data.0;
+    let rec = db.recipe(r);
+    let raw = d.prototype("recipe", &rec.name);
+    let product = rec.results.first().map(|p| match p.what {
+        ItemOrFluid::Item(i) => {
+            let item = db.item(i);
+            d.prototype(&item.kind, &item.name)
+        }
+        ItemOrFluid::Fluid(f) => d.prototype("fluid", &db.fluid(f).name),
+    });
+    let get =
+        |k: &str| raw.get(k).as_str().or_else(|| product.and_then(|p| p.get(k).as_str())).unwrap_or("").to_owned();
+    let subgroup = get("subgroup");
+    let sub = d.prototype("item-subgroup", &subgroup);
+    let group = sub.get("group").as_str().unwrap_or("");
+    let group_order = d.prototype("item-group", group).get("order").as_str().unwrap_or("").to_owned();
+    (group_order, sub.get("order").as_str().unwrap_or("").to_owned(), get("order"), rec.name.clone())
 }
 
 fn hand_recipes(db: &PrototypeDb, c: &Character) -> Vec<RecipeId> {
@@ -352,7 +374,8 @@ fn inventory_panel(
     }
     *last = sig;
     let db = sim.0.prototypes();
-    let recipes = hand_recipes(db, c);
+    let mut recipes = hand_recipes(db, c);
+    recipes.sort_by_cached_key(|r| menu_order(&data, db, *r));
     let root = root.0;
     commands.entity(root).despawn_related::<Children>();
     commands.entity(root).with_children(|p| {
@@ -434,8 +457,10 @@ fn entity_panel(
                     && let EntityData::CraftingMachine { crafting_categories, .. } = &proto.data
                 {
                     label(p, "Choose recipe", 14.0);
+                    let mut ids: Vec<RecipeId> = db.recipe_ids().collect();
+                    ids.sort_by_cached_key(|r| menu_order(&data, db, *r));
                     grid(p, |g| {
-                        for r in db.recipe_ids() {
+                        for r in ids {
                             let rec = db.recipe(r);
                             let items_only = rec.ingredients.iter().all(|i| matches!(i.what, ItemOrFluid::Item(_)))
                                 && rec.results.iter().all(|x| matches!(x.what, ItemOrFluid::Item(_)));

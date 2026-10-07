@@ -11,14 +11,27 @@ This is a fan project and is not affiliated with or endorsed by Wube Software.
 
 ## Status
 
-Step 1 (foundation):
+**Step 2 (vertical slice), playable:** a freeplay-style start on a generated map, through
+the burner phase to steam power and assemblers.
 
-- Cargo workspace with the simulation fully separated from rendering.
-- Deterministic simulation core with a fixed 60 UPS tick, fixed-point maths and a state checksum.
-- Prototype loader that runs Factorio's real settings and data stages (`core` + `base`) in
-  embedded Lua 5.2, then converts `data.raw` into typed, fixed-point prototypes.
-- Bevy client that opens a window, runs the sim, and draws entity and item sprites loaded
-  straight from the install.
+- Map generation: tiles, water and ore patches (iron, copper, coal, stone) with a
+  guaranteed starting area. Uses our own deterministic noise for now (see below).
+- Character: walking with collision, hand mining (resources and buildings), an 80-slot
+  inventory, and a hand-crafting queue that crafts missing intermediates.
+- Burner and electric mining drills, stone furnaces, assembling machines, chests.
+- Transport belts with two lanes, curves, sideloading, underground belts and splitters.
+- Burner and electric inserters with the game's swing timing and insertion limits.
+- Steam power: offshore pump, pipes, boiler, steam engine, small electric poles, with
+  brownouts slowing machines down in proportion.
+
+Behaviour is checked by tests against known game values (`crates/data/tests/gameplay.rs`).
+For example: hand mining iron takes 120 ticks, a burner drill makes one ore every 240 ticks,
+a furnace makes an iron plate every 192 ticks, a belt moves 15 items/s, and burner and
+electric inserters take 76 and 70 ticks per swing.
+
+Not done yet: research (every recipe is available), Factorio's own noise-expression map
+generator, trees, rocks, cliffs and enemies, oil and fluid recipes, labs, combat, vehicles,
+trains, logistics robots, circuits, blueprints, and saving and loading.
 
 ## Layout
 

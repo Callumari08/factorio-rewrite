@@ -56,6 +56,9 @@ pub struct ItemProto {
     pub stack_size: u32,
     pub place_result: Option<EntityProtoId>,
     pub fuel: Option<Fuel>,
+    /// Position in Factorio's item ordering (group, subgroup, order, name), used when
+    /// sorting inventories.
+    pub sort_index: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -260,8 +260,24 @@ pub fn build_prototype_db(data: &GameData) -> Result<PrototypeDb> {
         layers: layer_names.iter().enumerate().map(|(i, n)| (n.clone(), i as u32)).collect(),
     };
 
+    // Factorio orders items by group, subgroup, then their own `order` string, then name.
+    let order_key = |kind: &str, name: &str| {
+        let p = data.prototype(kind, name);
+        let subgroup = p.get("subgroup").as_str().unwrap_or("other");
+        let sub = data.prototype("item-subgroup", subgroup);
+        let group = sub.get("group").as_str().unwrap_or("");
+        let s = |v: &RawValue| v.as_str().unwrap_or("").to_owned();
+        (s(data.prototype("item-group", group).get("order")), s(sub.get("order")), s(p.get("order")), name.to_owned())
+    };
+    let mut by_order: Vec<usize> = (0..item_list.len()).collect();
+    by_order.sort_by_cached_key(|i| order_key(&item_list[*i].1, &item_list[*i].0));
+    let mut sort_index = vec![0u32; item_list.len()];
+    for (rank, i) in by_order.into_iter().enumerate() {
+        sort_index[i] = rank as u32;
+    }
+
     let mut items = Vec::new();
-    for (name, kind) in &item_list {
+    for (index, (name, kind)) in item_list.iter().enumerate() {
         let p = data.prototype(kind, name);
         let err = |m: &str| Error::Prototype { kind: kind.clone(), name: name.clone(), message: m.into() };
         let fuel = match (p.get("fuel_value").as_str(), p.get("fuel_category").as_str()) {
@@ -281,6 +297,7 @@ pub fn build_prototype_db(data: &GameData) -> Result<PrototypeDb> {
             stack_size: p.get("stack_size").as_i64().ok_or_else(|| err("missing stack_size"))? as u32,
             place_result: p.get("place_result").as_str().and_then(|e| names.entities.get(e).copied()),
             fuel,
+            sort_index: sort_index[index],
         });
     }
 

@@ -409,3 +409,264 @@ fn identical_inputs_give_identical_checksums() {
     };
     assert_eq!(run(), run());
 }
+
+fn belt_items(sim: &Simulation, id: EntityId) -> usize {
+    sim.belts.get(id).unwrap().item_count()
+}
+
+#[test]
+fn curve_lanes_hold_fewer_inner_items() {
+    let d = game!();
+    let mut sim = flat_world(d);
+    let plate = item(&sim, "iron-plate");
+    // East along y=20, then turning north at x=5: items heading east turn north, a left
+    // turn, so the corner's left lane is the inner one.
+    let a = place(&mut sim, "transport-belt", 4, 20, Direction::EAST);
+    let corner = place(&mut sim, "transport-belt", 5, 20, Direction::NORTH);
+    sim.step(&[]);
+    let b = sim.belts.get(corner).unwrap();
+    assert_eq!(b.shape, factorio_sim::belt::BeltShape::CurveLeft);
+    assert_eq!(b.lane_len(0), 106);
+    assert_eq!(b.lane_len(1), 295);
+    for _ in 0..600 {
+        for lane in 0..2 {
+            sim.belts.get_mut(a).unwrap().try_insert(lane, 0, plate);
+        }
+        sim.step(&[]);
+    }
+    let b = sim.belts.get(corner).unwrap();
+    // Dead-ended curve: inner lane fits 2 items (0..106 with 64 spacing), outer 5.
+    assert_eq!(b.lanes[0].items.len(), 2);
+    assert_eq!(b.lanes[1].items.len(), 5);
+}
+
+#[test]
+fn sideloading_fills_only_the_near_lane() {
+    let d = game!();
+    let mut sim = flat_world(d);
+    let plate = item(&sim, "iron-plate");
+    let main: Vec<EntityId> = (0..4).map(|y| place(&mut sim, "transport-belt", 10, 20 - y, Direction::NORTH)).collect();
+    // A belt feeding into the side of the second main belt from the west, plus a belt
+    // behind the main line so the main belt stays straight.
+    let side = place(&mut sim, "transport-belt", 9, 19, Direction::EAST);
+    for _ in 0..600 {
+        for lane in 0..2 {
+            sim.belts.get_mut(side).unwrap().try_insert(lane, 0, plate);
+        }
+        sim.step(&[]);
+    }
+    let top = sim.belts.get(main[3]).unwrap();
+    // Facing north, the west side is the left lane.
+    assert!(top.lanes[0].items.len() >= 3);
+    assert_eq!(top.lanes[1].items.len(), 0);
+}
+
+#[test]
+fn underground_belt_carries_items_across_a_gap() {
+    let d = game!();
+    let mut sim = flat_world(d);
+    let plate = item(&sim, "iron-plate");
+    let feed = place(&mut sim, "transport-belt", 0, 25, Direction::EAST);
+    let entrance = place(&mut sim, "underground-belt", 1, 25, Direction::EAST);
+    // Something in the way that the belt passes under.
+    place(&mut sim, "wooden-chest", 2, 25, Direction::NORTH);
+    let exit = place(&mut sim, "underground-belt", 5, 25, Direction::EAST);
+    let out = place(&mut sim, "transport-belt", 6, 25, Direction::EAST);
+    assert_eq!(sim.belts.get(entrance).unwrap().kind, factorio_sim::belt::BeltKind::UndergroundInput);
+    assert_eq!(sim.belts.get(exit).unwrap().kind, factorio_sim::belt::BeltKind::UndergroundOutput);
+    sim.belts.get_mut(feed).unwrap().try_insert(0, 0, plate);
+    for _ in 0..600 {
+        sim.step(&[]);
+    }
+    assert_eq!(belt_items(&sim, out), 1);
+}
+
+#[test]
+fn splitter_alternates_between_outputs() {
+    let d = game!();
+    let mut sim = flat_world(d);
+    let plate = item(&sim, "iron-plate");
+    // Splitter facing north at y=30 covering x=10 and x=11; one input belt below x=10,
+    // output belts above both halves.
+    let feed = place(&mut sim, "transport-belt", 10, 31, Direction::NORTH);
+    let proto = sim.prototypes().entity_id("splitter").unwrap();
+    let pos = factorio_sim::map::MapPosition::new(11 * 256, 30 * 256 + 128);
+    sim.place_entity(proto, pos, Direction::NORTH).unwrap();
+    let left = place(&mut sim, "transport-belt", 10, 29, Direction::NORTH);
+    let right = place(&mut sim, "transport-belt", 11, 29, Direction::NORTH);
+    let lefts: Vec<EntityId> =
+        (1..6).map(|i| place(&mut sim, "transport-belt", 10, 29 - i, Direction::NORTH)).collect();
+    let rights: Vec<EntityId> =
+        (1..6).map(|i| place(&mut sim, "transport-belt", 11, 29 - i, Direction::NORTH)).collect();
+    let mut sent = 0;
+    for _ in 0..1200 {
+        if sent < 20 && sim.belts.get_mut(feed).unwrap().try_insert(0, 0, plate) {
+            sent += 1;
+        }
+        sim.step(&[]);
+    }
+    let count = |ids: &[EntityId], first: EntityId, sim: &Simulation| {
+        belt_items(sim, first) + ids.iter().map(|i| belt_items(sim, *i)).sum::<usize>()
+    };
+    let (l, r) = (count(&lefts, left, &sim), count(&rights, right, &sim));
+    assert_eq!(l + r, 20);
+    assert_eq!(l, 10);
+    assert_eq!(r, 10);
+}
+
+/// Steam power for a block of consumers; returns the boiler entity.
+fn steam_power(sim: &mut Simulation, engines: i32) -> EntityId {
+    let water = sim.prototypes().tile_id("water").unwrap();
+    for y in 0..6 {
+        for x in -10..10 {
+            sim.surface.set_tile(TilePosition::new(x, y - 10), water);
+        }
+    }
+    place(sim, "offshore-pump", -1, -4, Direction::NORTH);
+    let boiler = place(sim, "boiler", -1, -3, Direction::EAST);
+    for i in 0..engines {
+        place(sim, "steam-engine", 1 + 5 * i, -3, Direction::EAST);
+    }
+    insert(sim, boiler, "coal", 50);
+    boiler
+}
+
+#[test]
+fn electric_inserter_moves_0_86_items_per_second() {
+    let d = game!();
+    let mut sim = flat_world(d);
+    steam_power(&mut sim, 1);
+    place(&mut sim, "small-electric-pole", 1, 0, Direction::NORTH);
+    let from = place(&mut sim, "iron-chest", 2, 0, Direction::NORTH);
+    place(&mut sim, "inserter", 2, 1, Direction::NORTH);
+    let to = place(&mut sim, "iron-chest", 2, 2, Direction::NORTH);
+    insert(&mut sim, from, "iron-plate", 400);
+    ticks_until(&mut sim, 2000, |s| container_count(s, to, "iron-plate") == 1);
+    for _ in 0..3600 {
+        sim.step(&[]);
+    }
+    let moved = container_count(&sim, to, "iron-plate") - 1;
+    // 70 ticks per swing: 3600 / 70 = 51.4.
+    assert!((51..=52).contains(&moved), "moved {moved}");
+}
+
+#[test]
+fn electric_drill_mines_half_an_ore_per_second() {
+    let d = game!();
+    let mut sim = flat_world(d);
+    steam_power(&mut sim, 1);
+    for x in 3..8 {
+        for y in 2..7 {
+            ore(&mut sim, "copper-ore", x, y, 1000);
+        }
+    }
+    place(&mut sim, "small-electric-pole", 2, 1, Direction::NORTH);
+    // 3x3 drill at (4..7, 3..6) facing north drops at (0, -1.85): into tile (5, 2).
+    place(&mut sim, "electric-mining-drill", 4, 3, Direction::NORTH);
+    let chest = place(&mut sim, "iron-chest", 5, 2, Direction::NORTH);
+    let t = ticks_until(&mut sim, 2000, |s| container_count(s, chest, "copper-ore") == 1);
+    assert!(t <= 125, "first ore after {t}");
+    let t = ticks_until(&mut sim, 5000, |s| container_count(s, chest, "copper-ore") == 11);
+    // mining_time 1 / mining_speed 0.5 = 2 s.
+    assert_eq!(t, 1200);
+}
+
+#[test]
+fn low_power_slows_machines_down() {
+    let d = game!();
+    let mut sim = flat_world(d);
+    steam_power(&mut sim, 1);
+    // One steam engine (900 kW) and twelve electric drills (90 kW each, 1080 kW).
+    for x in 0..40 {
+        for y in 5..8 {
+            ore(&mut sim, "iron-ore", x, y, 10_000);
+        }
+    }
+    let mut chests = Vec::new();
+    for i in 0..12 {
+        let x = i * 3;
+        place(&mut sim, "electric-mining-drill", x, 5, Direction::NORTH);
+        chests.push(place(&mut sim, "iron-chest", x + 1, 4, Direction::NORTH));
+        if i % 2 == 0 {
+            place(&mut sim, "small-electric-pole", x + 2, 3, Direction::NORTH);
+        }
+    }
+    place(&mut sim, "small-electric-pole", 1, 0, Direction::NORTH);
+    for _ in 0..600 {
+        sim.step(&[]);
+    }
+    let start: u32 = chests.iter().map(|c| container_count(&sim, *c, "iron-ore")).sum();
+    for _ in 0..3600 {
+        sim.step(&[]);
+    }
+    let mined: u32 = chests.iter().map(|c| container_count(&sim, *c, "iron-ore")).sum::<u32>() - start;
+    let sat = sim.power.electric_networks[0].satisfaction().to_f64_lossy();
+    assert!((0.82..0.85).contains(&sat), "satisfaction {sat}");
+    // Full power would be 12 × 30 = 360 per minute; 900/1080 of that is 300.
+    assert!((295..=305).contains(&mined), "mined {mined}");
+}
+
+#[test]
+fn freeplay_start_with_player_inputs_only() {
+    let d = game!();
+    let mut sim = flat_world(d);
+    // Freeplay starting inventory.
+    for (name, n) in [("iron-plate", 8), ("wood", 1), ("burner-mining-drill", 1), ("stone-furnace", 1)] {
+        give(&mut sim, name, n);
+    }
+    for x in 2..6 {
+        for y in 2..6 {
+            ore(&mut sim, "iron-ore", x, y, 500);
+        }
+    }
+    // Within the character's 2.7 tile resource reach.
+    ore(&mut sim, "coal", -2, 0, 100);
+    let at = |x: i32, y: i32| MapPosition::tile_center(TilePosition::new(x, y));
+
+    // Hand mine 10 coal (2 s each... coal mining_time 1).
+    input(&mut sim, InputAction::SetMining(Some(at(-2, 0))));
+    ticks_until(&mut sim, 5000, |s| inventory_count(s, "coal") == 10);
+    input(&mut sim, InputAction::SetMining(None));
+
+    // Build the drill on the iron and a furnace at its output, then fuel both.
+    let drill_item = item(&sim, "burner-mining-drill");
+    input(
+        &mut sim,
+        InputAction::Build {
+            item: drill_item,
+            position: MapPosition::new(3 * 256, 4 * 256),
+            direction: Direction::NORTH,
+        },
+    );
+    assert_eq!(inventory_count(&sim, "burner-mining-drill"), 0, "drill was built");
+    let furnace_item = item(&sim, "stone-furnace");
+    // Drill (2..4, 3..5) drops at (2.5, 2.7): a furnace covering (2..4, 1..3) catches it.
+    input(
+        &mut sim,
+        InputAction::Build {
+            item: furnace_item,
+            position: MapPosition::new(3 * 256, 2 * 256),
+            direction: Direction::NORTH,
+        },
+    );
+    assert_eq!(inventory_count(&sim, "stone-furnace"), 0, "furnace was built");
+    let coal = item(&sim, "coal");
+    input(&mut sim, InputAction::TransferToEntity { position: at(2, 3), item: coal, count: 5 });
+    input(&mut sim, InputAction::TransferToEntity { position: at(2, 1), item: coal, count: 5 });
+    assert_eq!(inventory_count(&sim, "coal"), 0);
+
+    // After a minute the furnace has made plates; take them and hand craft gears.
+    for _ in 0..3600 {
+        sim.step(&[]);
+    }
+    input(&mut sim, InputAction::TakeFromEntity { position: at(2, 1) });
+    let plates = inventory_count(&sim, "iron-plate");
+    assert!(plates >= 8 + 10, "plates: {plates}");
+    let gear = sim.prototypes().recipe_id("iron-gear-wheel").unwrap();
+    input(&mut sim, InputAction::Craft { recipe: gear, count: 4 });
+    ticks_until(&mut sim, 1000, |s| inventory_count(s, "iron-gear-wheel") == 4);
+
+    // Mine the furnace back: it returns itself and its contents.
+    input(&mut sim, InputAction::SetMining(Some(at(2, 1))));
+    ticks_until(&mut sim, 1000, |s| inventory_count(s, "stone-furnace") == 1);
+}

@@ -394,6 +394,9 @@ pub(crate) fn update(sim: &mut Simulation, player: u16) {
     walk(sim, player);
     mine(sim, player);
     craft(sim, player);
+    // The character's main inventory is kept sorted, as in Factorio.
+    let db = sim.db.clone();
+    character_mut(sim, player).inventory.sort_and_merge(&db);
 }
 
 /// cos(45°) in 16-bit fixed point.
