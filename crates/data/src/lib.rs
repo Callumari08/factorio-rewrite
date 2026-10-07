@@ -12,6 +12,7 @@
 pub mod datastage;
 pub mod defines;
 pub mod install;
+pub mod locale;
 pub mod mapgen;
 pub mod mods;
 pub mod raw;
