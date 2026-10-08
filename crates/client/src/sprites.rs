@@ -28,7 +28,7 @@ impl Loaded {
         let (x, y, w, h) = (s.x as f32, s.y as f32, s.width as f32, s.height as f32);
         Sprite {
             image: self.image.clone(),
-            rect: Some(Rect::new(x, y, x + w, y + h)),
+            rect: Some(inset(x, y, w, h)),
             custom_size: Some(Vec2::new(w, h) * s.scale as f32),
             ..default()
         }
@@ -44,9 +44,15 @@ impl Loaded {
         if sprite.image != self.image {
             sprite.image = self.image.clone();
         }
-        sprite.rect = Some(Rect::new(x, y, x + w, y + h));
+        sprite.rect = Some(inset(x, y, w, h));
         sprite.custom_size = Some(Vec2::new(w, h) * s.scale as f32);
     }
+}
+
+/// A sprite's rectangle in its sheet, pulled in by half a texel so filtering never picks
+/// up the neighbouring picture (which shows as thin lines along sprite edges).
+fn inset(x: f32, y: f32, w: f32, h: f32) -> Rect {
+    Rect::new(x + 0.5, y + 0.5, x + w - 0.5, y + h - 0.5)
 }
 
 #[derive(Resource, Default)]

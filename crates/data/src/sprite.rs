@@ -294,6 +294,38 @@ pub fn resource_sprite(data: &GameData, name: &str, stage: u32, variation: u32) 
 }
 
 /// First-row variants of a tile's main texture (1x1 tile size).
+/// A tile's main pictures by block size: for each `size` (1, 2, 4...) its variants, each
+/// covering size×size tiles. Large blocks are used where a whole aligned block is the
+/// same tile, which hides the repetition of single-tile pictures (and gives water its
+/// continuous look).
+pub fn tile_variant_sets(data: &GameData, name: &str) -> Vec<(u32, Vec<SpriteRef>)> {
+    let main = data.prototype("tile", name).get("variants").get("main");
+    let mut out = Vec::new();
+    for v in main.as_array() {
+        let Some(path) = v.get("picture").as_str().and_then(|p| data.resolve_path(p)) else { continue };
+        let size = v.get("size").as_i64().unwrap_or(1).max(1) as u32;
+        let scale = v.get("scale").as_f64().unwrap_or(1.0);
+        let px = (32.0 * size as f64 / scale).round() as u32;
+        let count = v.get("count").as_i64().unwrap_or(1).max(1) as u32;
+        let line = v.get("line_length").as_i64().unwrap_or(count as i64).max(1) as u32;
+        let y0 = v.get("y").as_i64().unwrap_or(0) as u32;
+        let sprites = (0..count)
+            .map(|i| SpriteRef {
+                path: path.clone(),
+                x: (i % line) * px,
+                y: y0 + (i / line) * px,
+                width: px,
+                height: px,
+                scale,
+                shift: (0.0, 0.0),
+            })
+            .collect();
+        out.push((size, sprites));
+    }
+    out.sort_by_key(|(s, _)| *s);
+    out
+}
+
 pub fn tile_variants(data: &GameData, name: &str) -> Vec<SpriteRef> {
     let proto = data.prototype("tile", name);
     let main = proto.get("variants").get("main");
@@ -379,6 +411,72 @@ pub struct TileTransition {
     pub u_transition: MaskPieces,
     /// Surrounded.
     pub o_transition: MaskPieces,
+}
+
+/// One piece type of a shore spritesheet: where its variants start, how many there are,
+/// and how many tiles tall its overlay and background pictures are (masks are one).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ShorePieces {
+    pub y: u32,
+    pub count: u32,
+    pub tile_height: u32,
+}
+
+/// A tile's transition to water (`transitions` with water in `to_tiles`): a mask through
+/// which the land is drawn over the water cell, an overlay (the bank) drawn on top, and
+/// optionally a background drawn under it. Overlay and background pieces may be two
+/// tiles tall, reaching down into the next tile. Rows are the four rotations (N, E, S, W).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Shore {
+    pub sheet: std::path::PathBuf,
+    /// Pixels per tile in the sheet.
+    pub size: u32,
+    pub to_tiles: Vec<String>,
+    pub overlay_x: u32,
+    pub mask_x: u32,
+    pub background_x: Option<u32>,
+    pub inner_corner: ShorePieces,
+    pub outer_corner: ShorePieces,
+    pub side: ShorePieces,
+    pub u_transition: ShorePieces,
+    pub o_transition: ShorePieces,
+}
+
+pub fn tile_shores(data: &GameData, name: &str) -> Vec<Shore> {
+    let mut out = Vec::new();
+    for t in data.prototype("tile", name).get("transitions").as_array() {
+        let Some(sheet) = t.get("spritesheet").as_str().and_then(|p| data.resolve_path(p)) else { continue };
+        let l = t.get("layout");
+        let to_tiles: Vec<String> =
+            t.get("to_tiles").as_array().iter().filter_map(|x| x.as_str().map(str::to_owned)).collect();
+        if to_tiles.is_empty() {
+            continue;
+        }
+        let int = |k: &str, d: i64| l.get(k).as_i64().unwrap_or(d).max(0) as u32;
+        let height = int("tile_height", 1);
+        let pieces = |p: &str, d_count: i64| ShorePieces {
+            y: int(&format!("{p}_y"), 0),
+            count: int(&format!("{p}_count"), int("count", d_count) as i64),
+            tile_height: if p == "o_transition" { 1 } else { int(&format!("{p}_tile_height"), height as i64) },
+        };
+        out.push(Shore {
+            sheet,
+            size: (32.0 / l.get("scale").as_f64().unwrap_or(0.5)).round() as u32,
+            to_tiles,
+            overlay_x: l.get("overlay").get("x_offset").as_i64().unwrap_or(0).max(0) as u32,
+            mask_x: l.get("mask").get("x_offset").as_i64().unwrap_or(0).max(0) as u32,
+            background_x: (t.get("background_enabled").as_bool() != Some(false))
+                .then(|| l.get("background").get("x_offset").as_i64())
+                .flatten()
+                .map(|x| x.max(0) as u32),
+            inner_corner: pieces("inner_corner", 1),
+            outer_corner: pieces("outer_corner", 1),
+            side: pieces("side", 1),
+            u_transition: pieces("u_transition", 1),
+            o_transition: pieces("o_transition", 1),
+        });
+    }
+    out
 }
 
 pub fn tile_transition(data: &GameData, name: &str) -> Option<TileTransition> {

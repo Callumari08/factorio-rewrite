@@ -52,6 +52,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut f = std::io::BufWriter::new(std::fs::File::create(&out)?);
     writeln!(f, "P6 {size} {size} 255")?;
     let mut counts = std::collections::BTreeMap::<String, u32>::new();
+    let mut richness = std::collections::BTreeMap::<String, u64>::new();
     for y in 0..size {
         for x in 0..size {
             let t = TilePosition::new(x - size / 2, y - size / 2);
@@ -61,6 +62,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Some(res) = surface.resource(t) {
                 let name = &db.entity(res.proto).name;
                 *counts.entry(name.clone()).or_default() += 1;
+                *richness.entry(name.clone()).or_default() += res.amount as u64;
                 c = match name.as_str() {
                     "iron-ore" => [104, 132, 146],
                     "copper-ore" => [203, 97, 53],
@@ -86,7 +88,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     for (k, v) in counts {
-        eprintln!("{k}: {v}");
+        match richness.get(&k) {
+            Some(r) => eprintln!("{k}: {v} tiles, total {r}, average {}", r / v as u64),
+            None => eprintln!("{k}: {v}"),
+        }
     }
     Ok(())
 }

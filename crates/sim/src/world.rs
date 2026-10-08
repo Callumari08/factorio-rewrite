@@ -102,7 +102,9 @@ pub enum InsertSource {
 }
 
 /// How many tiles around each character are kept generated.
-const GENERATE_RADIUS_CHUNKS: i32 = 3;
+const GENERATE_RADIUS_CHUNKS: i32 = 7;
+/// Generated straight away when the world is created; the rest follows tick by tick.
+const START_RADIUS_CHUNKS: i32 = 3;
 /// Chunks beyond the character's neighbours generated per tick.
 const CHUNKS_PER_TICK: u32 = 1;
 
@@ -223,11 +225,11 @@ impl Simulation {
         self.tick += 1;
     }
 
-    /// Generates every chunk within [`GENERATE_RADIUS_CHUNKS`] of `p`.
+    /// Generates every chunk within [`START_RADIUS_CHUNKS`] of `p`.
     fn generate_around(&mut self, p: MapPosition) {
         let c = p.tile().chunk();
-        for y in c.y - GENERATE_RADIUS_CHUNKS..=c.y + GENERATE_RADIUS_CHUNKS {
-            for x in c.x - GENERATE_RADIUS_CHUNKS..=c.x + GENERATE_RADIUS_CHUNKS {
+        for y in c.y - START_RADIUS_CHUNKS..=c.y + START_RADIUS_CHUNKS {
+            for x in c.x - START_RADIUS_CHUNKS..=c.x + START_RADIUS_CHUNKS {
                 self.surface.ensure_chunk(ChunkPosition { x, y });
             }
         }

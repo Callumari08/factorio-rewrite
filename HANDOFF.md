@@ -29,8 +29,16 @@ Read this first when picking the project up in a new session. See also
   factorio-data --example mapimage -- map.ppm 24 [seed]` renders a map for checking.
   Trees and rocks are generated (`EntityState::Static`, minable, collidable; trees come
   from the `trees` autoplace control). The renderer now only mirrors on-screen entities.
-  Tile transitions use each tile's `variants.transition` masks (`terrain.rs`); water
-  shores use the generic land mask, not the game's dedicated shore sprites yet.
+  Ground (`terrain.rs`): 32 px/tile textures near the camera, 8 px/tile for every visible
+  chunk (used when zoomed out), composed on the CPU within a per-frame time budget. Tile
+  edges use `variants.transition` masks; shores use the land tiles' `transitions` to
+  water (mask, bank overlay, background; two-tile-tall pieces); water and deep water blend
+  with a soft ramp. Not done: the animated water shader (`tile-effect` "water"), effect
+  maps/foam. Entities and cliffs are only drawn on chunks whose ground is ready.
+  The world generates 7 chunks around each character (3 at once, the rest one per tick).
+  Reference maps: `<factorio>/bin/x64/factorio --generate-map-preview out.png
+  --map-gen-seed N --report-quantities iron-ore,...` gives the real game's map and ore
+  totals for calibration.
   Decoratives are generated on demand by the client (`Surface::decoratives`, not game
   state) and painted into the chunk ground textures; building does not remove them yet.
   Cliffs: marching squares over `cliff_elevation` on the cliff's 4x4 grid where

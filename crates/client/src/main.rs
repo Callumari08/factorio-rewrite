@@ -155,7 +155,11 @@ fn fail(e: &factorio_data::Error) -> ! {
 fn setup_camera(mut commands: Commands) {
     commands.spawn((
         Camera2d,
-        Projection::Orthographic(OrthographicProjection { scale: 1.0, ..OrthographicProjection::default_2d() }),
+        // `FACTORIO_REWRITE_ZOOM` sets the starting camera scale (bigger is further out).
+        Projection::Orthographic(OrthographicProjection {
+            scale: std::env::var("FACTORIO_REWRITE_ZOOM").ok().and_then(|z| z.parse().ok()).unwrap_or(1.0),
+            ..OrthographicProjection::default_2d()
+        }),
     ));
 }
 

@@ -90,11 +90,18 @@ fn draw_cliffs(
     assets: &AssetServer,
     mirror: &mut CliffMirror,
     view: factorio_sim::map::Area,
+    ready: &crate::terrain::GroundReady,
 ) {
     let Some(cliff) = sim.0.surface.cliff_entity() else { return };
     let proto = sim.0.prototypes().entity(cliff);
     let EntityData::Cliff { orientations, .. } = &proto.data else { return };
-    let cliffs = sim.0.surface.cliffs_near(view);
+    let cliffs: Vec<_> = sim
+        .0
+        .surface
+        .cliffs_near(view)
+        .into_iter()
+        .filter(|c| ready.0.contains(&factorio_sim::map::MapPosition::new(c.x, c.y).tile().chunk()))
+        .collect();
     let visible: HashSet<(i32, i32)> = cliffs.iter().map(|c| (c.x, c.y)).collect();
     mirror.0.retain(|k, sprites| {
         let keep = visible.contains(k);
@@ -268,6 +275,7 @@ fn sync_entities(
     camera: Single<(&Transform, &Projection), With<Camera2d>>,
     window: Single<&Window, With<bevy::window::PrimaryWindow>>,
     mut cliff_mirror: ResMut<CliffMirror>,
+    ready: Res<crate::terrain::GroundReady>,
 ) {
     // Only entities on screen (plus a margin for tall sprites) are mirrored.
     let (ct, proj) = *camera;
@@ -281,8 +289,14 @@ fn sync_entities(
         left_top: crate::world_to_map(Vec2::new(c.x - half.x, c.y + half.y)),
         right_bottom: crate::world_to_map(Vec2::new(c.x + half.x, c.y - half.y)),
     };
-    draw_cliffs(&mut commands, &sim, &data, &assets, &mut cliff_mirror, view);
-    let ids = sim.0.entities_in(view);
+    draw_cliffs(&mut commands, &sim, &data, &assets, &mut cliff_mirror, view, &ready);
+    // Nothing is drawn on ground that is not drawn yet.
+    let ids: Vec<EntityId> = sim
+        .0
+        .entities_in(view)
+        .into_iter()
+        .filter(|id| sim.0.entity(*id).is_some_and(|e| ready.0.contains(&e.position.tile().chunk())))
+        .collect();
     let live: HashSet<EntityId> = ids.iter().copied().collect();
     mirror.0.retain(|id, m| {
         let keep = live.contains(id);
