@@ -18,6 +18,7 @@ use crate::controls::{MouseWorld, UiState};
 use crate::gui_skin::looks;
 use factorio_sim::proto::TechId;
 
+mod hud;
 mod research;
 use crate::sprites::Sprites;
 use crate::{Data, LOCAL_PLAYER, PendingInputs, Sim};
@@ -27,7 +28,7 @@ pub struct UiPlugin;
 impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(FrameTimeDiagnosticsPlugin::default())
-            .add_systems(Startup, (load_names, setup, research::setup).chain())
+            .add_systems(Startup, (load_names, setup, research::setup, hud::setup).chain())
             .add_systems(
                 Update,
                 (
@@ -39,6 +40,10 @@ impl Plugin for UiPlugin {
                     window,
                     live_bars,
                     hide_hud,
+                    hud::side_menu,
+                    hud::minimap,
+                    hud::character_panel,
+                    hud::shortcut_bar,
                     research::scroll,
                     research::window,
                     research::hud,
@@ -66,6 +71,8 @@ const HEADING: Color = Color::srgb(1.0, 0.902, 0.753);
 const TEXT: Color = Color::srgb(0.9, 0.9, 0.9);
 const PROGRESS: Color = Color::srgb(0.38, 0.72, 0.29);
 const SLOT_PX: f32 = 40.0;
+/// The quickbar's width: row numbers, ten slots, padding.
+const QUICKBAR_W: f32 = SLOT_PX * 11.0 + 4.0 * 3.0;
 /// An `inside_shallow_frame_with_padding` panel around a 10-slot table.
 const PANEL_W: f32 = SLOT_PX * 10.0 + 24.0;
 /// The game's `entity_button_frame`: 10 slots wide, 4 slots (less spacing) high.
@@ -289,12 +296,13 @@ fn setup(mut commands: Commands, fonts: Res<Fonts>) {
         Interaction::default(),
         Node {
             position_type: PositionType::Absolute,
-            bottom: Val::Px(6.0),
+            // Bottom centre, touching the screen edge as in the game.
+            bottom: Val::Px(0.0),
             left: Val::Percent(50.0),
-            margin: UiRect::left(Val::Px(-(SLOT_PX * 10.0 + 24.0) / 2.0)),
-            flex_direction: FlexDirection::Column,
-            padding: UiRect::all(Val::Px(6.0)),
-            row_gap: Val::Px(2.0),
+            margin: UiRect::left(Val::Px(-QUICKBAR_W / 2.0)),
+            flex_direction: FlexDirection::Row,
+            column_gap: Val::Px(4.0),
+            padding: UiRect::all(Val::Px(4.0)),
             ..default()
         },
         crate::gui_skin::node_image(&looks().frame),
@@ -322,11 +330,10 @@ fn setup(mut commands: Commands, fonts: Res<Fonts>) {
         Interaction::default(),
         Node {
             position_type: PositionType::Absolute,
-            bottom: Val::Px(6.0),
-            left: Val::Px(8.0),
+            // Along the bottom, right of the character panel.
+            bottom: Val::Px(4.0),
+            left: Val::Px(hud::CHARACTER_PANEL_W),
             flex_direction: FlexDirection::Row,
-            flex_wrap: FlexWrap::Wrap,
-            max_width: Val::Px(SLOT_PX * 8.0),
             ..default()
         },
     ));
@@ -928,10 +935,6 @@ fn panel(p: &mut ChildSpawnerCommands, width: f32, f: impl FnOnce(&mut ChildSpaw
 }
 
 /// The game's `progressbar` style: a sliced background and a bar tinted `color`.
-fn progress_bar(p: &mut ChildSpawnerCommands, fraction: f64, color: Color) {
-    progress_bar_live(p, fraction, color, None);
-}
-
 /// [`progress_bar`] whose fill follows a [`Live`] value.
 fn progress_bar_live(p: &mut ChildSpawnerCommands, fraction: f64, color: Color, live: Option<Live>) {
     let l = looks();
@@ -993,20 +996,41 @@ fn quickbar(
     };
     commands.entity(*root).despawn_related::<Children>();
     commands.entity(*root).with_children(|r| {
-        for row in 0..QUICKBAR_SLOTS / 10 {
-            r.spawn(Node { flex_direction: FlexDirection::Row, ..default() }).with_children(|rr| {
-                for k in 0..10 {
-                    let i = row * 10 + k;
-                    let item = p.quickbar[i];
-                    let tip = item.map(Tip::Item).or(Some(Tip::Text(format!(
-                        "Quickbar slot {}: click while holding an item to assign; right click clears",
-                        (k + 1) % 10
-                    ))));
-                    let bg = if item.is_some() && counts[i] == 0 { SLOT_RED } else { SLOT };
-                    ctx.slot(rr, item, Some(counts[i]), bg, Some(UiButton::Quickbar(i)), tip);
-                }
-            });
-        }
+        // Row numbers.
+        r.spawn(Node { flex_direction: FlexDirection::Column, ..default() }).with_children(|col| {
+            for row in 0..QUICKBAR_SLOTS / 10 {
+                let l = looks();
+                col.spawn((
+                    Node {
+                        width: Val::Px(SLOT_PX),
+                        height: Val::Px(SLOT_PX),
+                        justify_content: JustifyContent::Center,
+                        align_items: AlignItems::Center,
+                        ..default()
+                    },
+                    crate::gui_skin::node_image(&l.button.default),
+                    l.button.clone(),
+                    Button,
+                ))
+                .with_children(|b| ctx.text(b, (row + 1).to_string(), 14.0, Color::BLACK));
+            }
+        });
+        r.spawn(Node { flex_direction: FlexDirection::Column, ..default() }).with_children(|r| {
+            for row in 0..QUICKBAR_SLOTS / 10 {
+                r.spawn(Node { flex_direction: FlexDirection::Row, ..default() }).with_children(|rr| {
+                    for k in 0..10 {
+                        let i = row * 10 + k;
+                        let item = p.quickbar[i];
+                        let tip = item.map(Tip::Item).or(Some(Tip::Text(format!(
+                            "Quickbar slot {}: click while holding an item to assign; right click clears",
+                            (k + 1) % 10
+                        ))));
+                        let bg = if item.is_some() && counts[i] == 0 { SLOT_RED } else { INV };
+                        ctx.slot(rr, item, Some(counts[i]), bg, Some(UiButton::Quickbar(i)), tip);
+                    }
+                });
+            }
+        });
     });
 }
 
@@ -1016,10 +1040,7 @@ fn hovered_button(q: &Query<(&Interaction, &UiButton)>) -> Option<String> {
 }
 
 /// The technology screen covers the HUD, as in the game.
-fn hide_hud(
-    ui: Res<UiState>,
-    mut q: Query<&mut Node, Or<(With<QuickbarRoot>, With<QueueRoot>, With<research::ResearchHudRoot>)>>,
-) {
+fn hide_hud(ui: Res<UiState>, mut q: Query<&mut Node, Or<(With<QuickbarRoot>, With<QueueRoot>, With<hud::HudRoot>)>>) {
     for mut n in &mut q {
         let d = if ui.tech_open { Display::None } else { Display::Flex };
         if n.display != d {
@@ -1068,11 +1089,12 @@ fn queue(
                 ItemOrFluid::Item(i) => Some(i),
                 _ => None,
             });
+            // The one being crafted is highlighted, as in the game.
             ctx.slot(
                 p,
                 main,
                 Some(job.count),
-                SLOT,
+                if i == 0 { TAB_SELECTED } else { SLOT },
                 Some(UiButton::QueueCancel(i as u32)),
                 Some(Tip::Recipe(job.recipe)),
             );

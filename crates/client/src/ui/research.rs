@@ -42,22 +42,6 @@ pub(super) fn setup(mut commands: Commands, sim: Res<Sim>) {
         },
         GlobalZIndex(5),
     ));
-    commands.spawn((
-        ResearchHudRoot,
-        Interaction::default(),
-        Node {
-            position_type: PositionType::Absolute,
-            top: Val::Px(84.0),
-            left: Val::Px(8.0),
-            width: Val::Px(172.0),
-            flex_direction: FlexDirection::Row,
-            column_gap: Val::Px(6.0),
-            padding: UiRect::all(Val::Px(4.0)),
-            align_items: AlignItems::Center,
-            ..default()
-        },
-        BackgroundColor(FRAME.with_alpha(0.85)),
-    ));
 }
 
 impl Names {
@@ -790,19 +774,48 @@ pub(super) fn hud(
             return;
         };
         p.spawn((
-            Node { width: Val::Px(44.0), height: Val::Px(44.0), ..default() },
+            Node { width: Val::Px(32.0), height: Val::Px(32.0), ..default() },
             UiButton::OpenTech,
             Button,
             Tip::Tech(t),
         ))
-        .with_children(|c| ctx.tech_icon(c, t, 44.0));
+        .with_children(|c| ctx.tech_icon(c, t, 32.0));
         p.spawn(Node { flex_direction: FlexDirection::Column, flex_grow: 1.0, row_gap: Val::Px(2.0), ..default() })
             .with_children(|col| {
+                col.spawn((
+                    Text::new(if r.current() == Some(t) {
+                        names.tech(r, t)
+                    } else {
+                        format!("Research completed: {}", names.tech(r, t))
+                    }),
+                    TextFont { font: ctx.fonts.bold.clone(), font_size: 14.0, ..default() },
+                    TextColor(Color::WHITE),
+                ));
                 if r.current() == Some(t) {
-                    ctx.text(col, names.tech(r, t), 14.0, TEXT);
-                    progress_bar(col, r.progress_fraction(db, t).to_f64_lossy(), PROGRESS);
-                } else {
-                    ctx.text(col, format!("Research completed: {}", names.tech(r, t)), 14.0, HEADING);
+                    // A thin bar with the percentage beside it.
+                    col.spawn(Node {
+                        flex_direction: FlexDirection::Row,
+                        align_items: AlignItems::Center,
+                        column_gap: Val::Px(8.0),
+                        ..default()
+                    })
+                    .with_children(|row| {
+                        row.spawn(Node { flex_grow: 1.0, flex_direction: FlexDirection::Column, ..default() })
+                            .with_children(|b| {
+                                progress_bar_live(
+                                    b,
+                                    r.progress_fraction(db, t).to_f64_lossy(),
+                                    PROGRESS,
+                                    Some(Live::Research),
+                                )
+                            });
+                        row.spawn((
+                            Text::new(format!("{:.0}%", r.progress_fraction(db, t).to_f64_lossy() * 100.0)),
+                            TextFont { font: ctx.fonts.regular.clone(), font_size: 12.0, ..default() },
+                            TextColor(Color::WHITE),
+                            LiveText(Live::Research),
+                        ));
+                    });
                 }
             });
     });

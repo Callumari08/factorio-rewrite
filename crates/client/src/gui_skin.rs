@@ -193,6 +193,10 @@ pub struct Looks {
     pub production_bar_color: Color,
     /// One empty cell of `deep_slots_scroll_pane`'s tiled background (32 px, inset 4).
     pub empty_slot: Option<Slice>,
+    /// `side_menu_button`, the top-right menu buttons.
+    pub side_menu_button: ButtonLook,
+    /// `shortcut_bar_button` and its blue, red and green variants.
+    pub shortcut_buttons: [ButtonLook; 4],
     /// Technology slots by state: available, conditionally available, unavailable,
     /// researched.
     pub tech_slots: [ButtonLook; 4],
@@ -265,6 +269,13 @@ fn resolve(mut commands: Commands, skin: Res<Skin>, data: Res<Data>, assets: Res
         empty_slot: skin
             .prop("deep_slots_scroll_pane", "background_graphical_set")
             .and_then(|g| skin.element(g, &data, &assets)),
+        side_menu_button: look(states("side_menu_button")),
+        shortcut_buttons: [
+            look(states("shortcut_bar_button")),
+            look(states("shortcut_bar_button_blue")),
+            look(states("shortcut_bar_button_red")),
+            look(states("shortcut_bar_button_green")),
+        ],
         tech_slots: [
             look(states("available_technology_slot")),
             look(states("conditionally_available_technology_slot")),
