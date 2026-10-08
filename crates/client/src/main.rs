@@ -139,7 +139,7 @@ fn main() -> AppExit {
         ))
         .add_systems(Startup, setup_camera)
         .add_systems(FixedUpdate, step_simulation)
-        .add_systems(Update, (screenshot, zoom_sweep));
+        .add_systems(Update, (screenshot, zoom_sweep, flicker_shots));
 
     if let Some(path) = std::env::var_os("FACTORIO_REWRITE_SCREENSHOT") {
         let after = std::env::var("FACTORIO_REWRITE_SCREENSHOT_AFTER").ok().and_then(|s| s.parse().ok()).unwrap_or(4.0);
@@ -240,6 +240,28 @@ fn zoom_sweep(
         commands.spawn(Screenshot::primary_window()).observe(save_to_disk(path));
     }
     if t > 13.5 {
+        exit.write(AppExit::Success);
+    }
+}
+
+/// `FACTORIO_REWRITE_FLICKER=dir`: after eight seconds, saves 24 screenshots two frames
+/// apart while nothing moves, then exits; differences between them are flicker.
+fn flicker_shots(
+    mut commands: Commands,
+    time: Res<Time<Real>>,
+    mut frame: Local<u32>,
+    mut exit: MessageWriter<AppExit>,
+) {
+    let Some(dir) = std::env::var_os("FACTORIO_REWRITE_FLICKER") else { return };
+    if time.elapsed_secs() < 8.0 {
+        return;
+    }
+    *frame += 1;
+    if (*frame).is_multiple_of(2) && *frame <= 48 {
+        let path = std::path::Path::new(&dir).join(format!("f{:02}.png", *frame / 2));
+        commands.spawn(Screenshot::primary_window()).observe(save_to_disk(path));
+    }
+    if *frame > 80 {
         exit.write(AppExit::Success);
     }
 }

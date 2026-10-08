@@ -98,6 +98,8 @@ struct Terrain {
     sheets: HashMap<(PathBuf, bool), Option<Sheet>>,
     white: Option<Handle<Image>>,
     masked: HashMap<(Handle<Image>, Handle<Image>), Handle<MaskedTile>>,
+    /// Depth slots of materials, in order of first use (see `ground_z`).
+    material_slots: HashMap<(Handle<Image>, Handle<Image>), u32>,
     /// Tile pictures by (tile, block size): sheet and pixel rects of the variants.
     blocks: HashMap<(TileId, u32), Option<(PathBuf, Vec<Rect>)>>,
     transitions: HashMap<TileId, Option<factorio_data::sprite::TileTransition>>,
@@ -615,6 +617,33 @@ struct Region {
     touched: u32,
 }
 
+/// A mesh's depth. Every ground mesh that can overlap another gets a different one, as
+/// draws at equal depth are ordered differently from frame to frame (which flickers):
+/// by draw order, then by material (numbered as first used), then by `class` (which
+/// differs between neighbouring chunks, and between chunk and region meshes).
+fn ground_z(terrain: &mut Terrain, order: i32, color: &Handle<Image>, mask: &Handle<Image>, class: u32) -> f32 {
+    let rank = match order {
+        ORDER_BASE => 0,
+        o if (ORDER_TRANSITION..ORDER_SHORE_BACKGROUND).contains(&o) => 1 + (o - ORDER_TRANSITION).clamp(0, 250),
+        ORDER_SHORE_BACKGROUND => 252,
+        ORDER_SHORE_MASK => 253,
+        ORDER_SHORE_OVERLAY => 254,
+        _ => 255,
+    };
+    let next = terrain.material_slots.len() as u32;
+    let slot = *terrain.material_slots.entry((color.clone(), mask.clone())).or_insert(next) % 299;
+    -900.0 + rank as f32 * 3.0 + slot as f32 * 0.01 + class as f32 * 0.001
+}
+
+/// The depth class of a chunk's own meshes (0..4) and of a region's (4..8).
+fn chunk_class(c: ChunkPosition) -> u32 {
+    (c.x.rem_euclid(2) * 2 + c.y.rem_euclid(2)) as u32
+}
+
+fn region_class(r: (i32, i32)) -> u32 {
+    4 + (r.0.rem_euclid(2) * 2 + r.1.rem_euclid(2)) as u32
+}
+
 /// Spawns the meshes of some ground parts.
 fn spawn_parts(
     commands: &mut Commands,
@@ -623,13 +652,14 @@ fn spawn_parts(
     meshes: &mut Assets<Mesh>,
     masked: &mut Assets<MaskedTile>,
     parts: Parts,
+    class: u32,
 ) -> Vec<Entity> {
     let white = terrain.white(images);
     let plain = parts.plain.into_iter().map(|((order, image), q)| ((order, image, white.clone()), q));
     let mut out = Vec::new();
     for ((order, color, mask), quads) in plain.chain(parts.masked) {
         let material = terrain.masked_material(masked, &color, &mask);
-        let z = -100.0 + order as f32 * 0.001;
+        let z = ground_z(terrain, order, &color, &mask, class);
         out.push(
             commands
                 .spawn((Mesh2d(meshes.add(quads.mesh())), MeshMaterial2d(material), Transform::from_xyz(0.0, 0.0, z)))
@@ -670,7 +700,8 @@ fn build_chunks(
     for (_, c) in todo.into_iter().take(BUILD_PER_FRAME) {
         let parts = build_parts(t, &sim, &data, &mut images, c);
         // Drawn on its own until its region is merged again.
-        let ground = spawn_parts(&mut commands, t, &mut images, &mut meshes, &mut masked, parts.clone());
+        let ground =
+            spawn_parts(&mut commands, t, &mut images, &mut meshes, &mut masked, parts.clone(), chunk_class(c));
         let view = t.chunks.entry(c).or_default();
         view.built = true;
         view.parts = Some(parts);
@@ -709,7 +740,7 @@ fn build_chunks(
                 t.chunks.get_mut(&c).unwrap().parts = None;
             }
         }
-        let ground = spawn_parts(&mut commands, t, &mut images, &mut meshes, &mut masked, merged);
+        let ground = spawn_parts(&mut commands, t, &mut images, &mut meshes, &mut masked, merged, region_class(r));
         for e in std::mem::replace(&mut t.regions.get_mut(&r).unwrap().ground, ground) {
             commands.entity(e).despawn();
         }
