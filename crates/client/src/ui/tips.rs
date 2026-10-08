@@ -223,72 +223,179 @@ pub(super) fn tooltip_contents(p: &mut ChildSpawnerCommands, ctx: &mut Ctx, name
     }
 }
 
-/// The info panel for the entity under the mouse (shown at the side, below the side
-/// menu, as in the game): name, status and the figures that matter for its type.
+/// The info panel for the entity under the mouse (under the minimap, as in the game):
+/// its picture, name, status with its light, the figures that matter for its type, and
+/// what it consumes or generates.
 pub(super) fn entity_info(p: &mut ChildSpawnerCommands, ctx: &mut Ctx, names: &Names, sim: &Sim, id: EntityId) {
     let db = ctx.db;
     let Some(e) = sim.0.entity(id) else { return };
     let proto = db.entity(e.proto);
-    ctx.tip_title(p, names.entity(e.proto).to_owned());
-    let (st, _) = status(sim, id);
-    if !st.is_empty() {
-        ctx.tip_kv(p, "Status", st);
-    }
-    let power = |v: factorio_sim::Fixed| crate::chart::power_text(v.to_f64_lossy());
-    let burner = |p: &mut ChildSpawnerCommands, ctx: &mut Ctx, energy: &factorio_sim::energy::EnergyState| {
-        if let Some(b) = energy.burner() {
-            ctx.tip_category(p, "Consumes Burnable fuel");
-            if let Some(EnergySource::Burner { .. }) = proto.energy_source() {
-                let usage = match &proto.data {
-                    EntityData::MiningDrill { energy_usage, .. } | EntityData::CraftingMachine { energy_usage, .. } => {
-                        Some(*energy_usage)
-                    }
-                    EntityData::Boiler { energy_consumption, .. } => Some(*energy_consumption),
-                    _ => None,
-                };
-                if let Some(u) = usage {
-                    ctx.tip_kv(p, "Max consumption", power(u));
-                }
-            }
-            for s in b.fuel.slots().iter().flatten() {
-                ctx.tip_amount(p, Some(s.item), s.count.to_string(), names.item(s.item).to_owned());
-            }
+    let raw = ctx.data.0.prototype(&proto.kind, &proto.name).clone();
+    entity_picture(p, ctx, sim, id, Vec2::new(hud::SIDE_MENU_W, 104.0));
+    // Title band, regular weight.
+    p.spawn((
+        Node { padding: UiRect::axes(Val::Px(8.0), Val::Px(3.0)), ..default() },
+        crate::gui_skin::node_image(&looks().tooltip_title),
+    ))
+    .with_children(|t| {
+        t.spawn((
+            Text::new(names.entity(e.proto).to_owned()),
+            TextFont { font: ctx.fonts.regular.clone(), font_size: 15.0, ..default() },
+            TextColor(Color::BLACK),
+        ));
+    });
+    p.spawn(Node {
+        flex_direction: FlexDirection::Column,
+        row_gap: Val::Px(2.0),
+        padding: UiRect::axes(Val::Px(8.0), Val::Px(4.0)),
+        ..default()
+    })
+    .with_children(|p| {
+        let (st, color) = status(sim, id);
+        if !st.is_empty() {
+            let light = if color == STATUS_GREEN {
+                "status_working"
+            } else if color == STATUS_RED {
+                "status_not_working"
+            } else {
+                "status_yellow"
+            };
+            p.spawn(Node {
+                flex_direction: FlexDirection::Row,
+                column_gap: Val::Px(6.0),
+                align_items: AlignItems::Center,
+                ..default()
+            })
+            .with_children(|r| {
+                ctx.utility(r, light, 14.0);
+                r.spawn((
+                    Text::new(st),
+                    TextFont { font: ctx.fonts.bold.clone(), font_size: 14.0, ..default() },
+                    TextColor(Color::WHITE),
+                ));
+            });
         }
-    };
-    match &e.state {
-        EntityState::Crafter(c) => {
-            if let Some(r) = c.recipe {
-                ctx.tip_kv(p, "Recipe", names.recipe(r).to_owned());
-            }
-            burner(p, ctx, &c.energy);
+        if let EntityData::CraftingMachine { crafting_speed, .. } = &proto.data {
+            ctx.tip_kv(p, "Crafting speed", trim(crafting_speed.to_f64_lossy()));
         }
-        EntityState::Drill(d) => burner(p, ctx, &d.energy),
-        EntityState::Inserter(i) => burner(p, ctx, &i.energy),
-        EntityState::Lab(l) => burner(p, ctx, &l.energy),
-        EntityState::Fluid(f) => {
-            for b in &f.boxes {
-                if let Some(fluid) = b.fluid {
-                    let name = db.fluid(fluid).name.clone();
-                    ctx.tip_kv(p, &name, format!("{:.1}", b.amount.to_f64_lossy()));
-                    ctx.tip_kv(p, "Temperature", format!("{:.2} °C", b.temperature.to_f64_lossy()));
-                }
-            }
-            burner(p, ctx, &f.energy);
-            if matches!(proto.data, EntityData::Generator { .. }) {
-                ctx.tip_category(p, "Generates electricity");
-                ctx.tip_kv(p, "Power output", power(f.last_power));
-            }
+        if let EntityState::Crafter(c) = &e.state
+            && let Some(r) = c.recipe
+        {
+            ctx.tip_kv(p, "Recipe", names.recipe(r).to_owned());
         }
-        EntityState::Container(inv) => {
+        let pollution = raw.get("energy_source").get("emissions_per_minute").get("pollution").as_f64();
+        if let Some(v) = pollution {
+            ctx.tip_kv(p, "Pollution", format!("{}/m", trim(v)));
+        }
+        if let EntityState::Container(inv) = &e.state {
             let used = inv.slots().iter().filter(|s| s.is_some()).count();
             ctx.tip_kv(p, "Inventory", format!("{used}/{}", inv.len()));
         }
-        _ => {}
+        if let EntityState::Fluid(f) = &e.state {
+            for b in &f.boxes {
+                if let Some(fluid) = b.fluid {
+                    ctx.tip_kv(p, &capitalise(&db.fluid(fluid).name), format!("{:.1}", b.amount.to_f64_lossy()));
+                    ctx.tip_kv(p, "Temperature", format!("{:.2} °C", b.temperature.to_f64_lossy()));
+                }
+            }
+        }
+        // Health is not simulated yet: entities are always at full health.
+        if let Some(h) = raw.get("max_health").as_f64() {
+            ctx.tip_kv(p, "Health", format!("{}/{}", trim(h), trim(h)));
+        }
+    });
+    let power = |v: factorio_sim::Fixed| crate::chart::power_text(v.to_f64_lossy());
+    let section = |p: &mut ChildSpawnerCommands, f: &mut dyn FnMut(&mut ChildSpawnerCommands)| {
+        p.spawn(Node {
+            flex_direction: FlexDirection::Column,
+            row_gap: Val::Px(2.0),
+            padding: UiRect::axes(Val::Px(8.0), Val::Px(4.0)),
+            ..default()
+        })
+        .with_children(|c| f(c));
+    };
+    let energy = match &e.state {
+        EntityState::Crafter(c) => Some(&c.energy),
+        EntityState::Drill(d) => Some(&d.energy),
+        EntityState::Inserter(i) => Some(&i.energy),
+        EntityState::Lab(l) => Some(&l.energy),
+        EntityState::Fluid(f) => Some(&f.energy),
+        _ => None,
+    };
+    if let Some(b) = energy.and_then(|en| en.burner()) {
+        section(p, &mut |c| {
+            ctx.tip_category(c, "Consumes Burnable fuel");
+            let usage = match &proto.data {
+                EntityData::MiningDrill { energy_usage, .. } | EntityData::CraftingMachine { energy_usage, .. } => {
+                    Some(*energy_usage)
+                }
+                EntityData::Boiler { energy_consumption, .. } => Some(*energy_consumption),
+                _ => None,
+            };
+            if let Some(u) = usage {
+                ctx.tip_kv(c, "Max. consumption", power(u));
+            }
+            for s in b.fuel.slots().iter().flatten() {
+                ctx.tip_amount(c, Some(s.item), s.count.to_string(), names.item(s.item).to_owned());
+            }
+        });
     }
     if let Some(EnergySource::Electric { .. }) = proto.energy_source() {
-        ctx.tip_category(p, "Consumes electricity");
-        let used = sim.0.power.last_consumption.get(&id).copied().unwrap_or_default();
-        ctx.tip_kv(p, "Consumption", power(used));
-        ctx.tip_kv(p, "Max consumption", power(factorio_sim::power::electric_buffer_capacity(proto)));
+        section(p, &mut |c| {
+            ctx.tip_category(c, "Consumes electricity");
+            let max = factorio_sim::power::electric_buffer_capacity(proto);
+            ctx.tip_kv(c, "Max. consumption", power(max));
+            // The game's drain: a thirtieth of the usage unless the prototype says.
+            let drain = raw
+                .get("energy_source")
+                .get("drain")
+                .as_str()
+                .map(|s| s.to_owned())
+                .unwrap_or_else(|| power(max / factorio_sim::Fixed::from_int(31)));
+            ctx.tip_kv(c, "Min. consumption", drain);
+            c.spawn(Node {
+                flex_direction: FlexDirection::Row,
+                column_gap: Val::Px(6.0),
+                align_items: AlignItems::Center,
+                ..default()
+            })
+            .with_children(|r| {
+                r.spawn((
+                    Text::new("Electricity:"),
+                    TextFont { font: ctx.fonts.bold.clone(), font_size: 14.0, ..default() },
+                    TextColor(KEY),
+                ));
+                r.spawn(Node { flex_grow: 1.0, flex_direction: FlexDirection::Column, ..default() }).with_children(
+                    |b| {
+                        let sat = sim
+                            .0
+                            .power
+                            .electric_network_of
+                            .get(&id)
+                            .map_or(0.0, |n| sim.0.power.electric_networks[*n].satisfaction().to_f64_lossy());
+                        progress_bar_live(b, sat, looks().production_bar_color, None);
+                    },
+                );
+            });
+        });
     }
+    if let EntityState::Fluid(f) = &e.state
+        && matches!(proto.data, EntityData::Generator { .. })
+    {
+        section(p, &mut |c| {
+            ctx.tip_category(c, "Generates electricity");
+            ctx.tip_kv(c, "Power output", power(f.last_power));
+        });
+    }
+}
+
+/// A number without trailing zeros ("2", "1.5").
+fn trim(v: f64) -> String {
+    let s = format!("{v:.2}");
+    s.trim_end_matches('0').trim_end_matches('.').to_owned()
+}
+
+fn capitalise(s: &str) -> String {
+    let mut c = s.chars();
+    c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
 }

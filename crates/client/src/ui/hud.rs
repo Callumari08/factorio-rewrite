@@ -79,6 +79,14 @@ pub(super) fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
                 ImageNode::new(image),
                 Node { width: Val::Px(MINIMAP_PX as f32), height: Val::Px(MINIMAP_PX as f32), ..default() },
             ));
+            // The selected entity's info, under the minimap as in the game.
+            let (mut info, image) = super::tips::tip_frame();
+            info.display = Display::None;
+            info.margin = UiRect::horizontal(Val::Px(-4.0));
+            info.padding.left = Val::Px(0.0);
+            info.padding.right = Val::Px(0.0);
+            info.max_width = Val::Auto;
+            m.spawn((EntityInfoRoot, info, image, Pickable::IGNORE));
         });
     // Character panel, bottom left.
     commands.spawn((

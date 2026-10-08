@@ -136,7 +136,7 @@ struct TooltipRoot;
 #[derive(Component)]
 struct CursorIcon;
 #[derive(Component)]
-struct EntityInfoRoot;
+pub(super) struct EntityInfoRoot;
 #[derive(Component)]
 struct QueueRoot;
 /// A slot's normal background, restored when the mouse leaves it.
@@ -346,14 +346,7 @@ fn setup(mut commands: Commands, fonts: Res<Fonts>) {
     tip_node.position_type = PositionType::Absolute;
     tip_node.display = Display::None;
     commands.spawn((TooltipRoot, tip_node, tip_image, GlobalZIndex(10), Pickable::IGNORE));
-    // The selected entity's info, at the side below the side menu.
-    let (mut info_node, info_image) = tips::tip_frame();
-    info_node.position_type = PositionType::Absolute;
-    info_node.right = Val::Px(0.0);
-    info_node.top = Val::Px(400.0);
-    info_node.width = Val::Px(hud::SIDE_MENU_W);
-    info_node.display = Display::None;
-    commands.spawn((EntityInfoRoot, hud::HudRoot, info_node, info_image, Pickable::IGNORE));
+
     commands
         .spawn((
             CursorIcon,
@@ -828,35 +821,49 @@ fn entity_preview(p: &mut ChildSpawnerCommands, ctx: &mut Ctx, sim: &Sim, id: En
                 ZIndex(-1),
                 Pickable::IGNORE,
             ));
-            let centre = Vec2::new(PREVIEW_W, PREVIEW_H) / 2.0;
-            for (l, kind) in look.map(|(_, layers)| layers).unwrap_or_default() {
-                let s = &l.sprite;
-                let size = Vec2::new(s.width as f32, s.height as f32) * s.scale as f32;
-                let at = centre + Vec2::new(s.shift.0 as f32, s.shift.1 as f32) * 32.0 - size / 2.0;
-                let color = match kind {
-                    factorio_data::sprite::LayerKind::Shadow => Color::srgba(0.0, 0.0, 0.0, 0.55),
-                    factorio_data::sprite::LayerKind::Normal => Color::WHITE,
-                    factorio_data::sprite::LayerKind::Tinted([r, g, b, a]) => Color::srgba_u8(r, g, b, a),
-                };
-                v.spawn((
-                    ImageNode {
-                        image: l.image.clone(),
-                        rect: Some(Rect::new(s.x as f32, s.y as f32, (s.x + s.width) as f32, (s.y + s.height) as f32)),
-                        color,
-                        ..default()
-                    },
-                    Node {
-                        position_type: PositionType::Absolute,
-                        left: Val::Px(at.x),
-                        top: Val::Px(at.y),
-                        width: Val::Px(size.x),
-                        height: Val::Px(size.y),
-                        ..default()
-                    },
-                    Pickable::IGNORE,
-                ));
-            }
+            draw_layers(v, look, Vec2::new(PREVIEW_W, PREVIEW_H) / 2.0);
         });
+}
+
+/// The entity on a plain dark ground (the top of the info panel).
+fn entity_picture(p: &mut ChildSpawnerCommands, ctx: &mut Ctx, sim: &Sim, id: EntityId, size: Vec2) {
+    let look = crate::render::entity_look(sim, ctx.data, ctx.sprites, ctx.assets, id);
+    p.spawn((
+        Node { width: Val::Px(size.x), height: Val::Px(size.y), overflow: Overflow::clip(), ..default() },
+        BackgroundColor(Color::srgb(0.12, 0.12, 0.12)),
+    ))
+    .with_children(|v| draw_layers(v, look, size / 2.0));
+}
+
+/// An entity's sprite layers, centred on `centre`.
+fn draw_layers(v: &mut ChildSpawnerCommands, look: Option<crate::render::Look>, centre: Vec2) {
+    for (l, kind) in look.map(|(_, layers)| layers).unwrap_or_default() {
+        let s = &l.sprite;
+        let size = Vec2::new(s.width as f32, s.height as f32) * s.scale as f32;
+        let at = centre + Vec2::new(s.shift.0 as f32, s.shift.1 as f32) * 32.0 - size / 2.0;
+        let color = match kind {
+            factorio_data::sprite::LayerKind::Shadow => Color::srgba(0.0, 0.0, 0.0, 0.55),
+            factorio_data::sprite::LayerKind::Normal => Color::WHITE,
+            factorio_data::sprite::LayerKind::Tinted([r, g, b, a]) => Color::srgba_u8(r, g, b, a),
+        };
+        v.spawn((
+            ImageNode {
+                image: l.image.clone(),
+                rect: Some(Rect::new(s.x as f32, s.y as f32, (s.x + s.width) as f32, (s.y + s.height) as f32)),
+                color,
+                ..default()
+            },
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(at.x),
+                top: Val::Px(at.y),
+                width: Val::Px(size.x),
+                height: Val::Px(size.y),
+                ..default()
+            },
+            Pickable::IGNORE,
+        ));
+    }
 }
 
 /// The game's `production_progressbar`: a 24 px bar with the percentage inside it.
