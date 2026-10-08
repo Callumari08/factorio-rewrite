@@ -306,31 +306,35 @@ pub fn planet_ambience(data: &GameData, planet: &str) -> PlanetAmbience {
 /// Volume sliders from Factorio's `config.ini` `[sound]` section, muted ones as 0.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SoundSettings {
-    pub master: f32,
-    pub music: f32,
-    pub game_effects: f32,
-    pub gui_effects: f32,
-    pub walking: f32,
-    pub environment: f32,
-    pub world_ambient: f32,
-    pub wind: f32,
-    pub alerts: f32,
+    /// Slider values, in [`SLIDERS`] order.
+    pub volumes: [f32; SLIDER_COUNT],
+    /// The checkboxes beside the sliders: unchecked mutes that category.
+    pub enabled: [bool; SLIDER_COUNT],
 }
+
+pub const SLIDER_COUNT: usize = 10;
+
+/// The game's sound settings page, in its order: label, `config.ini` volume key, the
+/// prefix of its `-muted` key, and the default.
+pub const SLIDERS: [(&str, &str, &str, f32); SLIDER_COUNT] = [
+    ("Master", "master-volume", "master", 1.0),
+    ("Music", "music-volume", "music", 0.5),
+    ("Game effects", "game-effects-volume", "game-effects", 0.9),
+    ("GUI effects", "gui-effects-volume", "gui-effects", 0.8),
+    ("Walking", "walking-sound-volume", "walking-sounds", 0.45),
+    ("Environment", "environment-sounds-volume", "environment-sounds", 0.9),
+    ("Alerts", "alerts-volume", "alerts", 0.7),
+    ("Ambient", "world-ambient-volume", "world-ambient", 0.9),
+    ("Wind", "wind-volume", "wind", 0.9),
+    ("Simulations", "simulation-volume", "simulation", 0.5),
+];
+
+const MASTER: usize = 0;
 
 impl Default for SoundSettings {
     /// Factorio's defaults.
     fn default() -> Self {
-        SoundSettings {
-            master: 1.0,
-            music: 0.5,
-            game_effects: 0.9,
-            gui_effects: 0.8,
-            walking: 0.45,
-            environment: 0.9,
-            world_ambient: 0.9,
-            wind: 0.9,
-            alerts: 0.7,
-        }
+        SoundSettings { volumes: SLIDERS.map(|s| s.3), enabled: [true; SLIDER_COUNT] }
     }
 }
 
@@ -354,18 +358,11 @@ impl SoundSettings {
     }
 
     pub fn to_ini(&self) -> String {
-        format!(
-            "[sound]\nmaster-volume={}\nmusic-volume={}\ngame-effects-volume={}\ngui-effects-volume={}\nwalking-sound-volume={}\nenvironment-sounds-volume={}\nworld-ambient-volume={}\nwind-volume={}\nalerts-volume={}\n",
-            self.master,
-            self.music,
-            self.game_effects,
-            self.gui_effects,
-            self.walking,
-            self.environment,
-            self.world_ambient,
-            self.wind,
-            self.alerts
-        )
+        let mut out = String::from("[sound]\n");
+        for (i, (_, key, mute, _)) in SLIDERS.iter().enumerate() {
+            out += &format!("{key}={}\n{mute}-muted={}\n", self.volumes[i], !self.enabled[i]);
+        }
+        out
     }
 
     /// Reads the player's Factorio settings, or the defaults when there are none.
@@ -393,7 +390,6 @@ impl SoundSettings {
     /// Applies the `[sound]` values in `text` on top of `s`.
     pub fn parse_ini_onto(mut s: SoundSettings, text: &str) -> SoundSettings {
         let mut in_sound = false;
-        let mut muted: Vec<String> = Vec::new();
         for line in text.lines() {
             let line = line.trim();
             if line.starts_with('[') {
@@ -406,70 +402,37 @@ impl SoundSettings {
             let Some((key, value)) = line.split_once('=') else { continue };
             let (key, value) = (key.trim(), value.trim());
             if let Some(m) = key.strip_suffix("-muted") {
-                if value == "true" {
-                    muted.push(m.to_owned());
+                if let Some(i) = SLIDERS.iter().position(|x| x.2 == m) {
+                    s.enabled[i] = value != "true";
                 }
                 continue;
             }
             let Ok(v) = value.parse::<f32>() else { continue };
-            match key {
-                "master-volume" => s.master = v,
-                "music-volume" => s.music = v,
-                "game-effects-volume" => s.game_effects = v,
-                "gui-effects-volume" => s.gui_effects = v,
-                "walking-sound-volume" => s.walking = v,
-                "environment-sounds-volume" => s.environment = v,
-                "world-ambient-volume" => s.world_ambient = v,
-                "wind-volume" => s.wind = v,
-                "alerts-volume" => s.alerts = v,
-                _ => {}
-            }
-        }
-        for m in muted {
-            match m.as_str() {
-                "master" => s.master = 0.0,
-                "music" => s.music = 0.0,
-                "game-effects" => s.game_effects = 0.0,
-                "gui-effects" => s.gui_effects = 0.0,
-                "walking-sounds" => s.walking = 0.0,
-                "environment-sounds" => s.environment = 0.0,
-                "world-ambient" => s.world_ambient = 0.0,
-                "wind" => s.wind = 0.0,
-                "alerts" => s.alerts = 0.0,
-                _ => {}
+            if let Some(i) = SLIDERS.iter().position(|x| x.1 == key) {
+                s.volumes[i] = v;
             }
         }
         s
     }
 
-    /// The sliders shown in the settings panel: label and value.
-    pub fn sliders_mut(&mut self) -> [(&'static str, &mut f32); 9] {
-        [
-            ("Master", &mut self.master),
-            ("Music", &mut self.music),
-            ("Game effects", &mut self.game_effects),
-            ("GUI effects", &mut self.gui_effects),
-            ("Walking", &mut self.walking),
-            ("Environment", &mut self.environment),
-            ("World ambience", &mut self.world_ambient),
-            ("Wind", &mut self.wind),
-            ("Alerts", &mut self.alerts),
-        ]
+    /// A slider's effective value: 0 when its checkbox is off.
+    fn effective(&self, i: usize) -> f32 {
+        if self.enabled[i] { self.volumes[i] } else { 0.0 }
     }
 
     /// The slider for a `SoundType`, times master volume.
     pub fn volume(&self, category: &str) -> f32 {
-        let v = match category {
-            "gui-effect" => self.gui_effects,
-            "walking" => self.walking,
-            "environment" => self.environment,
-            "world-ambient" => self.world_ambient,
-            "wind" => self.wind,
-            "alert" => self.alerts,
-            "music" => self.music,
-            _ => self.game_effects,
+        let i = match category {
+            "gui-effect" => 3,
+            "walking" => 4,
+            "environment" => 5,
+            "alert" => 6,
+            "world-ambient" => 7,
+            "wind" => 8,
+            "music" => 1,
+            _ => 2,
         };
-        v * self.master
+        self.effective(i) * self.effective(MASTER)
     }
 }
 
@@ -487,14 +450,16 @@ mod tests {
         let s = SoundSettings::parse_ini(
             "[other]\nmaster-volume=0.1\n[sound]\n; preferred-output-index=255\nmaster-volume=0.61\nmusic-volume=0\n; walking-sound-volume=0.45\ngui-effects-muted=true\n",
         );
-        assert_eq!(s.master, 0.61);
-        assert_eq!(s.music, 0.0);
-        assert_eq!(s.walking, 0.45);
-        assert_eq!(s.gui_effects, 0.0);
+        assert_eq!(s.volumes[0], 0.61);
+        assert_eq!(s.volumes[1], 0.0);
+        assert_eq!(s.volumes[4], 0.45);
+        assert!(!s.enabled[3]);
+        assert_eq!(s.volume("gui-effect"), 0.0);
         assert!((s.volume("game-effect") - 0.61 * 0.9).abs() < 1e-6);
         // Our own file round-trips, on top of Factorio's.
         let mut ours = s.clone();
-        ours.music = 0.35;
+        ours.volumes[1] = 0.35;
+        ours.enabled[8] = false;
         assert_eq!(SoundSettings::parse_ini_onto(s, &ours.to_ini()), ours);
     }
 

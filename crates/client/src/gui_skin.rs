@@ -193,6 +193,23 @@ pub struct Looks {
     pub production_bar_color: Color,
     /// One empty cell of `deep_slots_scroll_pane`'s tiled background (32 px, inset 4).
     pub empty_slot: Option<Slice>,
+    /// `checkbox`: the box (unchecked, checked) and the check mark.
+    pub checkbox: ButtonLook,
+    pub checkbox_checked: Slice,
+    pub checkmark: Slice,
+    /// `slider`: the filled part, the empty track and the handle.
+    pub slider_full: Slice,
+    pub slider_empty: Slice,
+    pub slider_handle: Slice,
+    /// `textbox`'s background.
+    pub textbox: Slice,
+    /// `dropdown_button`.
+    pub dropdown: ButtonLook,
+    /// The `dialog_button` arrow pictures (left half: back, right half: confirm) and the
+    /// stretchable middle, grey and green: rects in the tileset.
+    pub dialog_grey: Rect,
+    pub dialog_green: Rect,
+    pub tileset: Handle<Image>,
     /// `side_menu_button`, the top-right menu buttons.
     pub side_menu_button: ButtonLook,
     /// `shortcut_bar_button` and its blue, red and green variants.
@@ -269,6 +286,36 @@ fn resolve(mut commands: Commands, skin: Res<Skin>, data: Res<Data>, assets: Res
         empty_slot: skin
             .prop("deep_slots_scroll_pane", "background_graphical_set")
             .and_then(|g| skin.element(g, &data, &assets)),
+        checkbox: look(states("checkbox")),
+        checkbox_checked: get("checkbox", "selected_graphical_set").unwrap_or_else(fallback),
+        checkmark: skin
+            .prop("checkbox", "checkmark")
+            .and_then(|e| skin.element(e, &data, &assets))
+            .unwrap_or_else(fallback),
+        slider_full: skin
+            .prop("slider", "full_bar")
+            .and_then(|e| skin.element(e.get("base"), &data, &assets))
+            .unwrap_or_else(fallback),
+        slider_empty: skin
+            .prop("slider", "empty_bar")
+            .and_then(|e| skin.element(e.get("base").get("center"), &data, &assets))
+            .unwrap_or_else(fallback),
+        slider_handle: skin
+            .prop("slider", "button")
+            .and_then(|e| skin.element(e.get("default_graphical_set").get("base"), &data, &assets))
+            .unwrap_or_else(fallback),
+        textbox: skin
+            .prop("textbox", "default_background")
+            .and_then(|e| skin.element(e.get("base"), &data, &assets))
+            .unwrap_or_else(fallback),
+        dropdown: look(states("dropdown_button")),
+        dialog_grey: Rect::new(0.0, 232.0, 48.0, 296.0),
+        dialog_green: Rect::new(0.0, 296.0, 48.0, 360.0),
+        tileset: data
+            .0
+            .resolve_path(&skin.tileset)
+            .map(|p| assets.load(crate::sprites::asset_path(&data, &p)))
+            .unwrap_or_default(),
         side_menu_button: look(states("side_menu_button")),
         shortcut_buttons: [
             look(states("shortcut_bar_button")),
