@@ -43,7 +43,7 @@ impl Config {
     }
 }
 
-fn config_dir() -> Option<PathBuf> {
+pub(crate) fn config_dir() -> Option<PathBuf> {
     if let Some(x) = env::var_os("XDG_CONFIG_HOME") {
         return Some(PathBuf::from(x));
     }

@@ -55,10 +55,13 @@ research the technologies you queue with `T`.
 | `F1` | Sandbox: a full stack of every item (what doesn't fit goes into chests next to you) |
 | `F2` | Toggle cheat mode: crafting is instant and free (like the game's `/cheat`) |
 | `F3` | Research every technology |
+| `Esc` | Close the open window; with none open, the settings panel (sound volumes) |
 
 Sound volumes are your own Factorio settings, read from the game's `config.ini`
 (`~/.factorio/config/config.ini` on Linux, `%APPDATA%\Factorio\config\config.ini` on Windows,
-`~/Library/Application Support/factorio/config/config.ini` on macOS), so change them in the game.
+`~/Library/Application Support/factorio/config/config.ini` on macOS). Change them in the settings
+panel (`Esc`); those changes are saved to `factorio-rewrite/sound.ini` in your config folder and
+never touch the game's own file.
 
 Buildings show their slots in their window: click with a held stack to put fuel, ore or
 ingredients in, and click the result slot to take output. Assemblers show a recipe chooser.

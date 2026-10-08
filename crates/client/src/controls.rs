@@ -31,6 +31,8 @@ pub struct UiState {
     pub inventory_open: bool,
     /// The technology window (T).
     pub tech_open: bool,
+    /// The settings panel (Escape with no window open).
+    pub settings_open: bool,
     /// True while the pointer is over a UI panel.
     pub pointer_over_ui: bool,
     pub status: String,
@@ -52,6 +54,10 @@ fn open_from_env(sim: Res<Sim>, mut ui: ResMut<UiState>, mut pending: ResMut<Pen
     // `FACTORIO_REWRITE_UI=tech` opens the technology window instead.
     if std::env::var("FACTORIO_REWRITE_UI").is_ok_and(|v| v == "tech") {
         ui.tech_open = true;
+        return;
+    }
+    if std::env::var("FACTORIO_REWRITE_UI").is_ok_and(|v| v == "settings") {
+        ui.settings_open = true;
         return;
     }
     ui.inventory_open = true;
@@ -153,6 +159,10 @@ fn keyboard(
         }
     }
     if keys.just_pressed(KeyCode::Escape) {
+        // Escape closes what is open; with nothing open it shows the settings.
+        if !(opened || ui.inventory_open || ui.tech_open) {
+            ui.settings_open = !ui.settings_open;
+        }
         ui.inventory_open = false;
         ui.tech_open = false;
         pending.push(InputAction::OpenEntity(None));

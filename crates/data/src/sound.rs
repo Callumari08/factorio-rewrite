@@ -27,6 +27,60 @@ pub struct Sound {
     pub max_count: Option<u32>,
     /// The settings slider this sound uses (`SoundType`), if the prototype sets one.
     pub category: Option<String>,
+    /// Volume by zoom level (`advanced_volume_control.fades`).
+    pub fades: Fades,
+}
+
+/// A volume curve between two zoom levels (`Fade`), e.g. footsteps fading in from zoom 0.3
+/// (0%) to 0.6 (100%).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Fade {
+    pub from: (f32, f32),
+    pub to: (f32, f32),
+    pub curve: String,
+}
+
+impl Fade {
+    fn parse(v: &RawValue) -> Option<Fade> {
+        let point = |p: &RawValue| -> Option<(f32, f32)> {
+            Some((f(p.get("control"))?, f(p.get("volume_percentage"))? / 100.0))
+        };
+        Some(Fade {
+            from: point(v.get("from"))?,
+            to: point(v.get("to"))?,
+            curve: v.get("curve_type").as_str().unwrap_or("linear").to_owned(),
+        })
+    }
+
+    /// Volume factor at a zoom level: `from` below it, `to` above, the curve in between.
+    pub fn at(&self, control: f32) -> f32 {
+        let (c0, v0) = self.from;
+        let (c1, v1) = self.to;
+        let t =
+            if c1 == c0 { if control >= c1 { 1.0 } else { 0.0 } } else { ((control - c0) / (c1 - c0)).clamp(0.0, 1.0) };
+        let k = match self.curve.as_str() {
+            "cosine" => (1.0 - (std::f32::consts::PI * t).cos()) / 2.0,
+            "S-curve" => t * t * (3.0 - 2.0 * t),
+            "exponential" => t * t,
+            "logarithmic" => 1.0 - (1.0 - t) * (1.0 - t),
+            "none" => 1.0,
+            _ => t,
+        };
+        v0 + (v1 - v0) * k
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Fades {
+    pub fade_in: Option<Fade>,
+    pub fade_out: Option<Fade>,
+}
+
+impl Fades {
+    /// Volume factor at a zoom level (1 is the default zoom, smaller is zoomed out).
+    pub fn at(&self, zoom: f32) -> f32 {
+        self.fade_in.as_ref().map_or(1.0, |f| f.at(zoom)) * self.fade_out.as_ref().map_or(1.0, |f| f.at(zoom))
+    }
 }
 
 fn f(v: &RawValue) -> Option<f32> {
@@ -71,6 +125,10 @@ impl Sound {
             audible_distance_modifier: f(v.get("audible_distance_modifier")).unwrap_or(1.0),
             max_count: v.get("aggregation").get("max_count").as_i64().map(|n| n as u32),
             category: v.get("category").as_str().map(str::to_owned),
+            fades: {
+                let f = v.get("advanced_volume_control").get("fades");
+                Fades { fade_in: Fade::parse(f.get("fade_in")), fade_out: Fade::parse(f.get("fade_out")) }
+            },
         })
     }
 }
@@ -197,6 +255,7 @@ pub fn music_tracks(data: &GameData, planet: &str) -> Vec<MusicTrack> {
                     audible_distance_modifier: 1.0,
                     max_count: None,
                     category: None,
+                    fades: Fades::default(),
                 },
                 s => Sound::parse(data, s)?,
             };
@@ -211,10 +270,37 @@ pub fn music_tracks(data: &GameData, planet: &str) -> Vec<MusicTrack> {
     out
 }
 
-/// A planet's looping background: (`base_ambience`, `wind`).
-pub fn planet_ambience(data: &GameData, planet: &str) -> (Option<Sound>, Option<Sound>) {
+/// A planet's looping background (`persistent_ambient_sounds`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlanetAmbience {
+    pub base_ambience: Option<Sound>,
+    pub wind: Option<Sound>,
+    /// How the two mix by zoom level. The fade's volume is the share of the second sound in
+    /// `order`; the first gets the rest. On Nauvis zooming out turns base ambience into wind.
+    pub crossfade: Option<(Fade, [String; 2])>,
+}
+
+impl PlanetAmbience {
+    /// (base ambience, wind) volume factors at a zoom level.
+    pub fn mix(&self, zoom: f32) -> (f32, f32) {
+        let Some((fade, order)) = &self.crossfade else { return (1.0, 1.0) };
+        let second = fade.at(zoom);
+        if order[1] == "wind" { (1.0 - second, second) } else { (second, 1.0 - second) }
+    }
+}
+
+pub fn planet_ambience(data: &GameData, planet: &str) -> PlanetAmbience {
     let p = data.prototype("planet", planet).get("persistent_ambient_sounds");
-    (Sound::parse(data, p.get("base_ambience")), Sound::parse(data, p.get("wind")))
+    let c = p.get("crossfade");
+    let order = c.get("order");
+    let crossfade = Fade::parse(c)
+        .zip(order.at(0).as_str().zip(order.at(1).as_str()))
+        .map(|(f, (a, b))| (f, [a.to_owned(), b.to_owned()]));
+    PlanetAmbience {
+        base_ambience: Sound::parse(data, p.get("base_ambience")),
+        wind: Sound::parse(data, p.get("wind")),
+        crossfade,
+    }
 }
 
 /// Volume sliders from Factorio's `config.ini` `[sound]` section, muted ones as 0.
@@ -249,8 +335,41 @@ impl Default for SoundSettings {
 }
 
 impl SoundSettings {
-    /// Reads the player's Factorio settings, or the defaults when there are none.
+    /// The player's Factorio settings, with any changes made in this game on top.
     pub fn load(install_root: &Path) -> SoundSettings {
+        let base = Self::load_factorio(install_root);
+        match overrides_path().and_then(|p| std::fs::read_to_string(p).ok()) {
+            Some(text) => Self::parse_ini_onto(base, &text),
+            None => base,
+        }
+    }
+
+    /// Saves these volumes as this game's own settings (Factorio's file is never changed).
+    pub fn save(&self) -> std::io::Result<()> {
+        let Some(path) = overrides_path() else { return Ok(()) };
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        std::fs::write(path, self.to_ini())
+    }
+
+    pub fn to_ini(&self) -> String {
+        format!(
+            "[sound]\nmaster-volume={}\nmusic-volume={}\ngame-effects-volume={}\ngui-effects-volume={}\nwalking-sound-volume={}\nenvironment-sounds-volume={}\nworld-ambient-volume={}\nwind-volume={}\nalerts-volume={}\n",
+            self.master,
+            self.music,
+            self.game_effects,
+            self.gui_effects,
+            self.walking,
+            self.environment,
+            self.world_ambient,
+            self.wind,
+            self.alerts
+        )
+    }
+
+    /// Reads the player's Factorio settings, or the defaults when there are none.
+    pub fn load_factorio(install_root: &Path) -> SoundSettings {
         let mut candidates = vec![install_root.join("config").join("config.ini")];
         if let Some(home) = std::env::var_os("HOME") {
             let home = PathBuf::from(home);
@@ -268,7 +387,11 @@ impl SoundSettings {
     }
 
     pub fn parse_ini(text: &str) -> SoundSettings {
-        let mut s = SoundSettings::default();
+        Self::parse_ini_onto(SoundSettings::default(), text)
+    }
+
+    /// Applies the `[sound]` values in `text` on top of `s`.
+    pub fn parse_ini_onto(mut s: SoundSettings, text: &str) -> SoundSettings {
         let mut in_sound = false;
         let mut muted: Vec<String> = Vec::new();
         for line in text.lines() {
@@ -319,6 +442,21 @@ impl SoundSettings {
         s
     }
 
+    /// The sliders shown in the settings panel: label and value.
+    pub fn sliders_mut(&mut self) -> [(&'static str, &mut f32); 9] {
+        [
+            ("Master", &mut self.master),
+            ("Music", &mut self.music),
+            ("Game effects", &mut self.game_effects),
+            ("GUI effects", &mut self.gui_effects),
+            ("Walking", &mut self.walking),
+            ("Environment", &mut self.environment),
+            ("World ambience", &mut self.world_ambient),
+            ("Wind", &mut self.wind),
+            ("Alerts", &mut self.alerts),
+        ]
+    }
+
     /// The slider for a `SoundType`, times master volume.
     pub fn volume(&self, category: &str) -> f32 {
         let v = match category {
@@ -335,6 +473,11 @@ impl SoundSettings {
     }
 }
 
+/// Where this game keeps its own volume settings.
+fn overrides_path() -> Option<PathBuf> {
+    crate::install::config_dir().map(|d| d.join("factorio-rewrite").join("sound.ini"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -349,5 +492,28 @@ mod tests {
         assert_eq!(s.walking, 0.45);
         assert_eq!(s.gui_effects, 0.0);
         assert!((s.volume("game-effect") - 0.61 * 0.9).abs() < 1e-6);
+        // Our own file round-trips, on top of Factorio's.
+        let mut ours = s.clone();
+        ours.music = 0.35;
+        assert_eq!(SoundSettings::parse_ini_onto(s, &ours.to_ini()), ours);
+    }
+
+    #[test]
+    fn zoom_fades() {
+        let fade = Fade { from: (0.3, 0.0), to: (0.6, 1.0), curve: "linear".into() };
+        assert_eq!(fade.at(0.2), 0.0);
+        assert_eq!(fade.at(1.0), 1.0);
+        assert!((fade.at(0.45) - 0.5).abs() < 1e-6);
+        let ambience = PlanetAmbience {
+            base_ambience: None,
+            wind: None,
+            crossfade: Some((
+                Fade { from: (0.35, 0.0), to: (2.0, 1.0), curve: "cosine".into() },
+                ["wind".into(), "base_ambience".into()],
+            )),
+        };
+        // Zoomed far out: all wind. Zoomed in: all base ambience.
+        assert_eq!(ambience.mix(0.2), (0.0, 1.0));
+        assert_eq!(ambience.mix(3.0), (1.0, 0.0));
     }
 }

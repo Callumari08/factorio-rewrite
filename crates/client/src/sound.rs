@@ -1,10 +1,13 @@
 //! Game sounds from the player's install: machine working loops, building and mining,
 //! hand crafting, research, footsteps, GUI clicks, water and wind ambience, and music.
 //!
-//! Volumes come from the player's own Factorio settings (`config.ini`). Positional sounds
-//! fade with distance from the centre of the screen and pan left/right. The exact falloff
-//! curve of the game is not documented; ours is `(1 - d / R)²` with `R` = 35 tiles times
-//! the sound's `audible_distance_modifier`, and quieter when zoomed out.
+//! Volumes come from the player's own Factorio settings (`config.ini`), changeable in the
+//! settings panel. Positional sounds fade with distance from the centre of the screen and
+//! pan left/right. The exact distance falloff of the game is not documented; ours is
+//! `(1 - d / R)²` with `R` = 35 tiles times the sound's `audible_distance_modifier`, and
+//! quieter when zoomed out. Zoom fades come from the data (`advanced_volume_control.fades`,
+//! e.g. footsteps and water fade out when zoomed out), and the planet's base ambience and
+//! wind crossfade by zoom as its `persistent_ambient_sounds` describe.
 
 use std::collections::HashMap;
 
@@ -58,8 +61,9 @@ impl Plugin for SoundPlugin {
 #[derive(Resource, Default)]
 pub struct SimEvents(pub Vec<GameEvent>);
 
+/// Volume sliders; the settings panel changes and saves them.
 #[derive(Resource)]
-struct Settings(SoundSettings);
+pub struct Settings(pub SoundSettings);
 
 /// Parsed sounds, looked up once per key.
 #[derive(Resource, Default)]
@@ -128,13 +132,16 @@ struct Loops {
     persistent: HashMap<EntityProtoId, Loop>,
     /// Inserters holding an item last frame, to play their swing sound once per pickup.
     inserter_hands: HashMap<EntityId, bool>,
-    ambience: Vec<Entity>,
     last_cursor: Option<factorio_sim::inventory::ItemStack>,
     last_opened: Option<(EntityId, EntityProtoId)>,
     footstep_timer: f32,
-    mining_timer: f32,
+    /// Seconds to the next tool hit while mining.
+    mining_timer: Option<f32>,
+    ambience_loops: Option<(Option<Entity>, Option<Entity>)>,
+    planet: Option<factorio_data::sound::PlanetAmbience>,
     water_timer: f32,
     music: Option<Entity>,
+    music_volume: f32,
     music_gap: f32,
     music_order: Vec<usize>,
     music_next: usize,
@@ -168,6 +175,11 @@ fn tiles(p: MapPosition) -> Vec2 {
 }
 
 impl Listener {
+    /// The game's zoom level: 1 normally, smaller when zoomed out. Sounds fade by it.
+    fn factorio_zoom(&self) -> f32 {
+        1.0 / self.zoom.max(0.01)
+    }
+
     /// Distance gain for a sound at `at` (tiles), 0 when out of hearing range.
     fn gain(&self, at: Vec2, sound: &Sound) -> f32 {
         let zoom = self.zoom.max(1.0);
@@ -201,7 +213,7 @@ fn play(
     let gain = at.map_or(1.0, |p| listener.gain(p, sound));
     let category = sound.category.as_deref().unwrap_or(category);
     let file = &sound.variations[rng.index(sound.variations.len())];
-    let volume = rng.range(file.volume) * settings.volume(category) * gain;
+    let volume = rng.range(file.volume) * settings.volume(category) * gain * sound.fades.at(listener.factorio_zoom());
     if volume <= 0.001 {
         return;
     }
@@ -362,10 +374,11 @@ fn working_sounds(
         }
     }
     let effects = settings.0.volume("game-effect");
+    let zoom = listener.factorio_zoom();
     // Start and retarget machine loops.
     for (id, (gain, at, ws)) in &wanted {
         let file = &ws.sound.variations[0];
-        let target = file.volume.1 * effects * gain;
+        let target = file.volume.1 * effects * gain * ws.sound.fades.at(zoom);
         if let Some(l) = loops.machines.get_mut(id) {
             l.target = target;
             continue;
@@ -394,7 +407,7 @@ fn working_sounds(
     for (proto, gain) in &persistent_gain {
         let ws = bank.working[proto].clone().unwrap();
         let file = &ws.sound.variations[0];
-        let target = file.volume.1 * effects * gain.min(1.0);
+        let target = file.volume.1 * effects * gain.min(1.0) * ws.sound.fades.at(zoom);
         if let Some(l) = loops.persistent.get_mut(proto) {
             l.target = target;
             continue;
@@ -479,7 +492,13 @@ fn footsteps(
     }
 }
 
-/// The pickaxe while mining by hand.
+/// Ticks of one swing of the character's mining animation (26 frames at speed 0.9), and
+/// the frame the tool hits on (`mining_with_tool_particles_animation_positions`).
+const SWING_SECONDS: f32 = 26.0 / 0.9 / 60.0;
+const HIT_SECONDS: f32 = 19.0 / 0.9 / 60.0;
+
+/// The tool hitting what the character mines: ore, rock or wood. Buildings make no tool
+/// sound in the game, only their removal sound when done (see `event_sounds`).
 fn mining_sounds(
     mut commands: Commands,
     assets: Res<AssetServer>,
@@ -494,21 +513,25 @@ fn mining_sounds(
 ) {
     let Some(c) = sim.0.player(LOCAL_PLAYER).and_then(|p| p.character.as_ref()) else { return };
     let Some(m) = &c.mining else {
-        loops.mining_timer = 0.0;
+        loops.mining_timer = None;
         return;
     };
-    loops.mining_timer -= time.delta_secs();
-    if loops.mining_timer > 0.0 {
+    let timer = loops.mining_timer.get_or_insert(HIT_SECONDS);
+    *timer -= time.delta_secs();
+    if *timer > 0.0 {
         return;
     }
-    loops.mining_timer = 0.55;
-    let stone = match &m.target {
-        factorio_sim::player::MiningTarget::Resource(t) => {
-            sim.0.surface.resource(*t).is_some_and(|r| sim.0.prototypes().entity(r.proto).name.contains("stone"))
+    *timer += SWING_SECONDS;
+    let key = match &m.target {
+        factorio_sim::player::MiningTarget::Resource(_) => "axe_mining_ore",
+        factorio_sim::player::MiningTarget::Entity(id) => {
+            match sim.0.entity(*id).map(|e| sim.0.prototypes().entity(e.proto).kind.as_str()) {
+                Some("tree") => "mining_wood",
+                Some("simple-entity") => "axe_mining_stone",
+                _ => return,
+            }
         }
-        _ => false,
     };
-    let key = if stone { "axe_mining_stone" } else { "axe_mining_ore" };
     if let Some(s) = bank.utility(&data, key) {
         play(&mut commands, &assets, &data, &mut rng, &settings.0, &listener, &s, "game-effect", None);
     }
@@ -526,21 +549,30 @@ fn ambience(
     mut bank: ResMut<Bank>,
     mut loops: ResMut<Loops>,
     mut rng: ResMut<Rng>,
+    mut sinks: Query<&mut AudioSink>,
 ) {
-    if loops.ambience.is_empty() {
-        let (base, wind) = factorio_data::sound::planet_ambience(&data.0, "nauvis");
-        // The game crossfades these with zoom; at normal zoom both are heard.
-        for (sound, category, share) in [(base, "world-ambient", 1.0), (wind, "wind", 0.5)] {
-            let Some(s) = sound else { continue };
-            let file = &s.variations[0];
-            let handle: Handle<AudioSource> = assets.load(crate::sprites::asset_path(&data, &file.path));
-            let volume = file.volume.1 * settings.0.volume(category) * share;
-            let e =
-                commands.spawn((AudioPlayer::new(handle), PlaybackSettings::LOOP.with_volume(Volume::Linear(volume))));
-            loops.ambience.push(e.id());
-        }
-        if loops.ambience.is_empty() {
-            loops.ambience.push(Entity::PLACEHOLDER);
+    // Base ambience and wind loop forever; zoom crossfades between them.
+    if loops.planet.is_none() {
+        let planet = factorio_data::sound::planet_ambience(&data.0, "nauvis");
+        let mut spawn = |sound: &Option<Sound>| {
+            sound.as_ref().map(|s| {
+                let handle: Handle<AudioSource> = assets.load(crate::sprites::asset_path(&data, &s.variations[0].path));
+                commands.spawn((AudioPlayer::new(handle), PlaybackSettings::LOOP.with_volume(Volume::Linear(0.0)))).id()
+            })
+        };
+        loops.ambience_loops = Some((spawn(&planet.base_ambience), spawn(&planet.wind)));
+        loops.planet = Some(planet);
+    }
+    if let (Some(planet), Some((base, wind))) = (&loops.planet, loops.ambience_loops) {
+        let (base_mix, wind_mix) = planet.mix(listener.factorio_zoom());
+        for (entity, sound, category, mix) in
+            [(base, &planet.base_ambience, "world-ambient", base_mix), (wind, &planet.wind, "wind", wind_mix)]
+        {
+            if let (Some(e), Some(s)) = (entity, sound)
+                && let Ok(mut sink) = sinks.get_mut(e)
+            {
+                sink.set_volume(Volume::Linear(s.variations[0].volume.1 * settings.0.volume(category) * mix));
+            }
         }
     }
 
@@ -595,7 +627,15 @@ fn music(
     mut loops: ResMut<Loops>,
     mut rng: ResMut<Rng>,
     playing: Query<(), With<AudioPlayer>>,
+    mut sinks: Query<&mut AudioSink>,
 ) {
+    // Follow the volume slider while a track plays.
+    if let Some(e) = loops.music
+        && let Ok(mut sink) = sinks.get_mut(e)
+    {
+        let file_volume = loops.music_volume;
+        sink.set_volume(Volume::Linear(file_volume * settings.0.volume("music")));
+    }
     if settings.0.volume("music") <= 0.0 {
         return;
     }
@@ -632,6 +672,7 @@ fn music(
     let file = &track.sound.variations[0];
     let handle: Handle<AudioSource> = assets.load(crate::sprites::asset_path(&data, &file.path));
     let volume = file.volume.1 * settings.0.volume("music");
+    loops.music_volume = file.volume.1;
     let e = commands.spawn((AudioPlayer::new(handle), PlaybackSettings::DESPAWN.with_volume(Volume::Linear(volume))));
     loops.music = Some(e.id());
 }

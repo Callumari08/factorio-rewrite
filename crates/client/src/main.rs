@@ -9,6 +9,7 @@ mod chart;
 mod controls;
 mod demo;
 mod render;
+mod settings;
 mod sound;
 mod sprites;
 mod terrain;
@@ -122,6 +123,7 @@ fn main() -> AppExit {
             ui::UiPlugin,
             controls::ControlsPlugin,
             sound::SoundPlugin,
+            settings::SettingsPlugin,
         ))
         .add_systems(Startup, setup_camera)
         .add_systems(FixedUpdate, step_simulation)

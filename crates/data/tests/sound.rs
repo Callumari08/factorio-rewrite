@@ -33,6 +33,13 @@ fn sounds_parse_from_the_game_data() {
     for t in &music {
         assert!(t.sound.variations[0].path.exists(), "{:?}", t.sound.variations[0].path);
     }
-    let (base, wind) = planet_ambience(&data, "nauvis");
-    assert!(base.is_some() && wind.is_some());
+    let planet = planet_ambience(&data, "nauvis");
+    assert!(planet.base_ambience.is_some() && planet.wind.is_some());
+    // Nauvis crossfades from wind (zoomed out) to base ambience (zoomed in).
+    assert_eq!(planet.mix(0.3), (0.0, 1.0));
+    assert_eq!(planet.mix(2.5), (1.0, 0.0));
+    // Footsteps fade out when zoomed out.
+    let steps = walking_sound(&data, "tile", "grass-1").unwrap();
+    assert_eq!(steps.fades.at(1.0), 1.0);
+    assert_eq!(steps.fades.at(0.2), 0.0);
 }
