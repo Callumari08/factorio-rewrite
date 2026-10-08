@@ -20,6 +20,7 @@ use factorio_sim::proto::TechId;
 
 mod hud;
 mod research;
+mod tips;
 use crate::sprites::Sprites;
 use crate::{Data, LOCAL_PLAYER, PendingInputs, Sim};
 
@@ -29,6 +30,7 @@ impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(FrameTimeDiagnosticsPlugin::default())
             .add_systems(Startup, (load_names, setup, research::setup, hud::setup).chain())
+            .add_systems(PostUpdate, font_weights.before(bevy::ui::UiSystems::Prepare))
             .add_systems(
                 Update,
                 (
@@ -49,6 +51,7 @@ impl Plugin for UiPlugin {
                     research::hud,
                     hover_highlight,
                     tooltip,
+                    entity_info,
                     cursor_icon,
                     selection_box,
                 )
@@ -132,6 +135,8 @@ struct WindowRoot;
 struct TooltipRoot;
 #[derive(Component)]
 struct CursorIcon;
+#[derive(Component)]
+struct EntityInfoRoot;
 #[derive(Component)]
 struct QueueRoot;
 /// A slot's normal background, restored when the mouse leaves it.
@@ -337,20 +342,18 @@ fn setup(mut commands: Commands, fonts: Res<Fonts>) {
             ..default()
         },
     ));
-    commands.spawn((
-        TooltipRoot,
-        Node {
-            position_type: PositionType::Absolute,
-            flex_direction: FlexDirection::Column,
-            padding: UiRect::all(Val::Px(8.0)),
-            row_gap: Val::Px(3.0),
-            display: Display::None,
-            max_width: Val::Px(360.0),
-            ..default()
-        },
-        crate::gui_skin::node_image(&looks().tooltip),
-        GlobalZIndex(10),
-    ));
+    let (mut tip_node, tip_image) = tips::tip_frame();
+    tip_node.position_type = PositionType::Absolute;
+    tip_node.display = Display::None;
+    commands.spawn((TooltipRoot, tip_node, tip_image, GlobalZIndex(10), Pickable::IGNORE));
+    // The selected entity's info, at the side below the side menu.
+    let (mut info_node, info_image) = tips::tip_frame();
+    info_node.position_type = PositionType::Absolute;
+    info_node.right = Val::Px(0.0);
+    info_node.top = Val::Px(400.0);
+    info_node.width = Val::Px(hud::SIDE_MENU_W);
+    info_node.display = Display::None;
+    commands.spawn((EntityInfoRoot, hud::HudRoot, info_node, info_image, Pickable::IGNORE));
     commands
         .spawn((
             CursorIcon,
@@ -537,14 +540,6 @@ impl Ctx<'_> {
             Text::new(s.into()),
             TextFont { font: self.fonts.regular.clone(), font_size: size, ..default() },
             TextColor(color),
-        ));
-    }
-
-    fn heading(&self, p: &mut ChildSpawnerCommands, s: impl Into<String>) {
-        p.spawn((
-            Text::new(s.into()),
-            TextFont { font: self.fonts.bold.clone(), font_size: 18.0, ..default() },
-            TextColor(HEADING),
         ));
     }
 
@@ -1032,6 +1027,24 @@ fn quickbar(
             }
         });
     });
+}
+
+/// Gives text in the bold and semibold fonts their weight. Bevy finds a font face by
+/// family and weight, and all three files are "Titillium Web": without the weight it
+/// would draw them all in the regular face.
+fn font_weights(fonts: Res<Fonts>, mut q: Query<&mut TextFont, Changed<TextFont>>) {
+    for mut f in &mut q {
+        let w = if f.font == fonts.bold {
+            bevy::text::FontWeight::BOLD
+        } else if f.font == fonts.semibold {
+            bevy::text::FontWeight::SEMIBOLD
+        } else {
+            continue;
+        };
+        if f.weight != w {
+            f.weight = w;
+        }
+    }
 }
 
 /// The hovered button's `Debug` text (see [`Ctx::hovered`]).
@@ -2149,7 +2162,7 @@ fn tooltip(
     mut last: Local<String>,
     mut misses: Local<u8>,
 ) {
-    let tip = hovered.iter().find(|(i, _)| **i != Interaction::None).map(|(_, t)| t.clone());
+    let tip = hovered.iter().find(|(i, _)| **i != Interaction::None).map(|(_, t)| t.clone()).or_else(|| test_tip(&sim));
     let Some(tip) = tip else {
         // A rebuilt window's buttons only learn they are hovered a frame later; keep the
         // tooltip through that frame instead of blinking it.
@@ -2161,7 +2174,7 @@ fn tooltip(
         return;
     };
     *misses = 0;
-    if let Some(c) = window.cursor_position() {
+    if let Some(c) = window.cursor_position().or(test_tip(&sim).map(|_| Vec2::new(40.0, 120.0))) {
         root.1.display = Display::Flex;
         root.1.left = Val::Px(c.x + 18.0);
         root.1.top = Val::Px(c.y + 18.0);
@@ -2183,73 +2196,70 @@ fn tooltip(
     };
     let root = root.0;
     commands.entity(root).despawn_related::<Children>();
-    commands.entity(root).with_children(|p| match tip {
-        Tip::Text(t) => ctx.text(p, t, 14.0, TEXT),
-        Tip::Tech(t) => {
-            let r = sim.0.research();
-            ctx.heading(p, names.tech(r, t));
-            if let Some(unit) = &db.technology(t).unit {
-                let count = unit.count_for(r.level[t.index()]);
-                let packs: Vec<String> = unit.ingredients.iter().map(|(i, _)| names.item(*i).to_owned()).collect();
-                ctx.text(p, format!("{count} × ({})", packs.join(", ")), 14.0, TEXT);
-            }
-            ctx.text(p, "Click: details   Right click: remove from queue", 12.0, Color::srgb(0.6, 0.6, 0.6));
-        }
-        Tip::Item(i) => {
-            ctx.heading(p, names.item(i).to_owned());
-            let item = db.item(i);
-            ctx.text(p, format!("Stack size: {}", item.stack_size), 14.0, TEXT);
-            if let Some(f) = &item.fuel {
-                ctx.text(p, format!("Fuel value: {:.1} MJ", f.value.to_f64_lossy() / 1e6), 14.0, TEXT);
-            }
-        }
-        Tip::Recipe(r) => {
-            let rec = db.recipe(r);
-            ctx.heading(p, format!("{} (Recipe)", names.recipe(r)));
-            ctx.text(p, "Ingredients:", 14.0, HEADING);
-            for ing in &rec.ingredients {
-                p.spawn(Node {
-                    flex_direction: FlexDirection::Row,
-                    column_gap: Val::Px(6.0),
-                    align_items: AlignItems::Center,
-                    ..default()
-                })
-                .with_children(|row| match ing.what {
-                    ItemOrFluid::Item(i) => {
-                        ctx.icon(row, i, 24.0);
-                        ctx.text(row, format!("{} x {}", ing.amount, names.item(i)), 14.0, TEXT);
-                    }
-                    ItemOrFluid::Fluid(f) => {
-                        ctx.text(row, format!("{} x {}", ing.amount, db.fluid(f).name), 14.0, TEXT)
-                    }
-                });
-            }
-            ctx.text(p, format!("{} s  Crafting time", rec.energy_required), 14.0, TEXT);
-            if rec.results.len() > 1 || rec.results.first().is_some_and(|x| x.amount_max != factorio_sim::Fixed::ONE) {
-                ctx.text(p, "Products:", 14.0, HEADING);
-                for x in &rec.results {
-                    if let ItemOrFluid::Item(i) = x.what {
-                        p.spawn(Node {
-                            flex_direction: FlexDirection::Row,
-                            column_gap: Val::Px(6.0),
-                            align_items: AlignItems::Center,
-                            ..default()
-                        })
-                        .with_children(|row| {
-                            ctx.icon(row, i, 24.0);
-                            ctx.text(row, format!("{} x {}", x.amount_max, names.item(i)), 14.0, TEXT);
-                        });
-                    }
-                }
-            }
-            ctx.text(
-                p,
-                "Left click: craft 1   Right click: craft 5   Shift+click: craft all",
-                12.0,
-                Color::srgb(0.6, 0.6, 0.6),
-            );
-        }
-    });
+    commands.entity(root).with_children(|p| tips::tooltip_contents(p, &mut ctx, &names, &sim, &tip));
+}
+
+/// `FACTORIO_REWRITE_TIP=item:<name>|recipe:<name>|tech:<name>` shows that tooltip
+/// without hovering, for screenshots.
+fn test_tip(sim: &Sim) -> Option<Tip> {
+    let v = std::env::var("FACTORIO_REWRITE_TIP").ok()?;
+    let (kind, name) = v.split_once(':')?;
+    let db = sim.0.prototypes();
+    match kind {
+        "item" => db.item_id(name).map(Tip::Item),
+        "recipe" => db.recipe_id(name).map(Tip::Recipe),
+        "tech" => db.technology_id(name).map(Tip::Tech),
+        _ => None,
+    }
+}
+
+/// The info panel for the entity under the mouse.
+#[allow(clippy::too_many_arguments)]
+fn entity_info(
+    mut commands: Commands,
+    sim: Res<Sim>,
+    data: Res<Data>,
+    assets: Res<AssetServer>,
+    fonts: Res<Fonts>,
+    names: Res<Names>,
+    ui: Res<UiState>,
+    mouse: Res<MouseWorld>,
+    mut sprites: ResMut<Sprites>,
+    mut root: Single<(Entity, &mut Node), With<EntityInfoRoot>>,
+    mut last: Local<String>,
+) {
+    // `FACTORIO_REWRITE_INFO=1`: the opened entity's info, for screenshots.
+    let test = std::env::var_os("FACTORIO_REWRITE_INFO").and_then(|_| opened(&sim));
+    let id = mouse
+        .0
+        .filter(|_| !ui.pointer_over_ui && !ui.tech_open)
+        .and_then(|p| sim.0.entity_at(p))
+        .or(test)
+        .filter(|id| sim.0.entity(*id).is_some_and(|e| !matches!(e.state, EntityState::Static { .. })));
+    let Some(id) = id else {
+        root.1.display = Display::None;
+        last.clear();
+        return;
+    };
+    root.1.display = Display::Flex;
+    // Refreshed when the entity's state changes, at most a few times a second.
+    let sig = format!("{id:?}|{}|{}", structure_sig(&sim, id), sim.0.tick() / 15);
+    if *last == sig {
+        return;
+    }
+    *last = sig;
+    let db = sim.0.prototypes();
+    let mut ctx = Ctx {
+        sprites: &mut sprites,
+        assets: &assets,
+        data: &data,
+        fonts: &fonts,
+        db,
+        research: sim.0.research(),
+        hovered: None,
+    };
+    commands.entity(root.0).despawn_related::<Children>();
+    commands.entity(root.0).with_children(|p| tips::entity_info(p, &mut ctx, &names, &sim, id));
 }
 
 fn cursor_icon(

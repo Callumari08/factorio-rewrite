@@ -15,7 +15,7 @@ pub(super) const CHARACTER_PANEL_W: f32 = SLOT_PX * 4.0 + 16.0;
 /// The minimap: pixels on screen, one tile per pixel.
 const MINIMAP_PX: u32 = 248;
 /// The side menu's width.
-const SIDE_MENU_W: f32 = MINIMAP_PX as f32 + 16.0;
+pub(super) const SIDE_MENU_W: f32 = MINIMAP_PX as f32 + 16.0;
 
 /// Every HUD panel (hidden under the technology screen).
 #[derive(Component)]
