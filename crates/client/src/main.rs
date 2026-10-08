@@ -8,6 +8,7 @@
 mod chart;
 mod controls;
 mod demo;
+mod gui_skin;
 mod render;
 mod settings;
 mod sound;
@@ -130,6 +131,7 @@ fn main() -> AppExit {
             sprites::SpritesPlugin,
             terrain::TerrainPlugin,
             render::RenderPlugin,
+            gui_skin::GuiSkinPlugin,
             ui::UiPlugin,
             controls::ControlsPlugin,
             sound::SoundPlugin,

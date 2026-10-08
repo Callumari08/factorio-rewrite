@@ -15,6 +15,7 @@ use factorio_sim::research::Research;
 use factorio_sim::world::{EntityId, EntityState};
 
 use crate::controls::{MouseWorld, UiState};
+use crate::gui_skin::looks;
 use factorio_sim::proto::TechId;
 
 mod research;
@@ -54,6 +55,8 @@ impl Plugin for UiPlugin {
 const FRAME: Color = Color::srgb(0.192, 0.188, 0.192);
 const INNER: Color = Color::srgb(0.141, 0.137, 0.141);
 const SLOT: Color = Color::srgb(0.239, 0.235, 0.239);
+/// Marks an inventory slot (the game's darker `inventory_slot` style).
+const INV: Color = Color::srgb(0.239, 0.235, 0.240);
 const SLOT_HOVER: Color = Color::srgb(0.36, 0.34, 0.30);
 const SLOT_RED: Color = Color::srgb(0.38, 0.17, 0.15);
 const TAB_SELECTED: Color = Color::srgb(0.55, 0.42, 0.18);
@@ -63,6 +66,7 @@ const PROGRESS: Color = Color::srgb(0.38, 0.72, 0.29);
 const SLOT_PX: f32 = 40.0;
 
 #[derive(Resource)]
+#[allow(dead_code)]
 pub struct Fonts {
     pub regular: Handle<Font>,
     pub semibold: Handle<Font>,
@@ -285,7 +289,7 @@ fn setup(mut commands: Commands, fonts: Res<Fonts>) {
             row_gap: Val::Px(2.0),
             ..default()
         },
-        BackgroundColor(FRAME),
+        crate::gui_skin::node_image(&looks().frame),
     ));
     commands.spawn((
         WindowRoot,
@@ -301,7 +305,7 @@ fn setup(mut commands: Commands, fonts: Res<Fonts>) {
             display: Display::None,
             ..default()
         },
-        BackgroundColor(FRAME),
+        crate::gui_skin::node_image(&looks().frame),
     ));
     commands.spawn((
         QueueRoot,
@@ -327,7 +331,7 @@ fn setup(mut commands: Commands, fonts: Res<Fonts>) {
             max_width: Val::Px(360.0),
             ..default()
         },
-        BackgroundColor(Color::srgba(0.1, 0.1, 0.1, 0.96)),
+        crate::gui_skin::node_image(&looks().tooltip),
         GlobalZIndex(10),
     ));
     commands
@@ -545,18 +549,26 @@ impl Ctx<'_> {
         button: Option<UiButton>,
         tip: Option<Tip>,
     ) {
+        // The game's slot styles: inventory, plain, red (missing) and yellow (selected).
+        let look = if bg == SLOT_RED {
+            &looks().red_slot
+        } else if bg == TAB_SELECTED {
+            &looks().yellow_slot
+        } else if bg == INV {
+            &looks().inventory_slot
+        } else {
+            &looks().slot
+        };
         let mut e = p.spawn((
             Node {
                 width: Val::Px(SLOT_PX),
                 height: Val::Px(SLOT_PX),
                 justify_content: JustifyContent::Center,
                 align_items: AlignItems::Center,
-                border: UiRect::all(Val::Px(1.0)),
                 ..default()
             },
-            BackgroundColor(bg),
-            Base(bg),
-            BorderColor::all(Color::srgb(0.08, 0.08, 0.08)),
+            crate::gui_skin::node_image(&look.default),
+            look.clone(),
         ));
         if let Some(b) = button {
             e.insert((b, Button));
@@ -566,19 +578,21 @@ impl Ctx<'_> {
         if let Some(t) = tip.or(item.map(Tip::Item)) {
             e.insert(t);
         }
-        let font = self.fonts.semibold.clone();
+        let font = self.fonts.bold.clone();
         e.with_children(|c| {
             if let Some(i) = item {
                 self.icon(c, i, 32.0);
             }
             if let Some(n) = count.filter(|n| *n > 1) {
+                // The game's `count-font`: bold 13 with a dark outline.
                 c.spawn((
                     Text::new(n.to_string()),
                     TextFont { font: font.clone(), font_size: 13.0, ..default() },
                     TextColor(Color::WHITE),
+                    TextShadow { offset: Vec2::new(1.0, 1.0), color: Color::BLACK },
                     Node {
                         position_type: PositionType::Absolute,
-                        bottom: Val::Px(-1.0),
+                        bottom: Val::Px(0.0),
                         right: Val::Px(2.0),
                         ..default()
                     },
@@ -596,7 +610,7 @@ impl Ctx<'_> {
     ) {
         grid(p, columns, |g| {
             for (i, s) in inv.slots().iter().enumerate() {
-                self.slot(g, s.map(|s| s.item), s.map(|s| s.count), SLOT, Some(UiButton::Slot(make(i))), None);
+                self.slot(g, s.map(|s| s.item), s.map(|s| s.count), INV, Some(UiButton::Slot(make(i))), None);
             }
         });
     }
@@ -614,32 +628,36 @@ fn grid(p: &mut ChildSpawnerCommands, columns: usize, f: impl FnOnce(&mut ChildS
 }
 
 fn panel(p: &mut ChildSpawnerCommands, width: f32, f: impl FnOnce(&mut ChildSpawnerCommands)) {
-    p.spawn((
-        Node {
-            width: Val::Px(width),
-            flex_direction: FlexDirection::Column,
-            padding: UiRect::all(Val::Px(8.0)),
-            row_gap: Val::Px(6.0),
-            ..default()
-        },
-        BackgroundColor(INNER),
-    ))
-    .with_children(f);
+    p.spawn(Node {
+        width: Val::Px(width),
+        flex_direction: FlexDirection::Column,
+        padding: UiRect::all(Val::Px(8.0)),
+        row_gap: Val::Px(6.0),
+        ..default()
+    })
+    .with_children(|c| {
+        crate::gui_skin::backdrop(c, &looks().shallow);
+        f(c);
+    });
 }
 
+/// The game's `progressbar` style: a sliced background and a bar tinted `color`.
 fn progress_bar(p: &mut ChildSpawnerCommands, fraction: f64, color: Color) {
+    let l = looks();
     p.spawn((
         Node { width: Val::Percent(100.0), height: Val::Px(8.0), ..default() },
-        BackgroundColor(Color::srgb(0.08, 0.08, 0.08)),
+        crate::gui_skin::node_image(&l.bar_background),
     ))
     .with_children(|b| {
+        let mut bar = crate::gui_skin::node_image(&l.bar);
+        bar.color = color;
         b.spawn((
             Node {
                 width: Val::Percent((fraction.clamp(0.0, 1.0) * 100.0) as f32),
                 height: Val::Percent(100.0),
                 ..default()
             },
-            BackgroundColor(color),
+            bar,
         ));
     });
 }
@@ -821,21 +839,26 @@ fn crafting_panel(p: &mut ChildSpawnerCommands, ctx: &mut Ctx, names: &Names, c:
             let icon = ctx.sprites.get(ctx.assets, ctx.data, &format!("group:{}", g.name), || {
                 factorio_data::sprite::icon_of(&d, d.prototype("item-group", &g.name))
             });
-            let bg = if i == tab { TAB_SELECTED } else { SLOT };
-            t.spawn((
+            // The game's `filter_group_tab`; the selected one uses its selected set.
+            let l = looks();
+            let mut tab_entity = t.spawn((
                 UiButton::Tab(i),
                 Button,
                 Tip::Text(names.groups.get(&g.name).cloned().unwrap_or_default()),
                 Node {
-                    width: Val::Px(72.0),
-                    height: Val::Px(72.0),
+                    width: Val::Px(71.0),
+                    height: Val::Px(64.0),
                     justify_content: JustifyContent::Center,
                     align_items: AlignItems::Center,
                     ..default()
                 },
-                BackgroundColor(bg),
-            ))
-            .with_children(|b| {
+            ));
+            if i == tab {
+                tab_entity.insert(crate::gui_skin::node_image(&l.tab_selected));
+            } else {
+                tab_entity.insert((crate::gui_skin::node_image(&l.tab.default), l.tab.clone()));
+            }
+            tab_entity.with_children(|b| {
                 if let Some(icon) = icon {
                     let s = &icon.sprite;
                     b.spawn((
@@ -1156,12 +1179,14 @@ fn network_window(
     let font = ctx.fonts.regular.clone();
     p.spawn(Node { flex_direction: FlexDirection::Row, column_gap: Val::Px(4.0), ..default() }).with_children(|row| {
         for (i, name) in ["5s", "1m", "10m"].iter().enumerate() {
-            let bg = if chart.range == i { TAB_SELECTED } else { SLOT };
+            let l = looks();
+            let look = if chart.range == i { &l.yellow_slot } else { &l.button };
             row.spawn((
                 UiButton::ChartRange(i),
                 Button,
                 Node { padding: UiRect::axes(Val::Px(8.0), Val::Px(2.0)), ..default() },
-                BackgroundColor(bg),
+                crate::gui_skin::node_image(&look.default),
+                look.clone(),
             ))
             .with_children(|b| {
                 b.spawn((Text::new(*name), TextFont { font: font.clone(), font_size: 13.0, ..default() }));
