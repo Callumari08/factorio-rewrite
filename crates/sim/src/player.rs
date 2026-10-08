@@ -683,6 +683,11 @@ fn mine(sim: &mut Simulation, player: u16) {
                 .is_some_and(|r| matches!(db.entity(r.proto).data, EntityData::Resource { infinite: true, .. }));
             if let Some(r) = sim.surface.resource(t) {
                 sim.research_trigger(crate::research::TriggerEvent::Mined(r.proto));
+                sim.events.push(crate::world::GameEvent::ResourceMined {
+                    player,
+                    resource: r.proto,
+                    position: MapPosition::tile_center(t),
+                });
             }
             sim.surface.deplete(t, 1, infinite);
             if sim.surface.resource(t).is_none() {
@@ -690,6 +695,10 @@ fn mine(sim: &mut Simulation, player: u16) {
             }
         }
         MiningTarget::Entity(id) => {
+            if let Some(e) = sim.entities.get(&id) {
+                let event = crate::world::GameEvent::Mined { entity: e.proto, position: e.position };
+                sim.events.push(event);
+            }
             let contents = sim.remove_entity(id);
             for s in contents {
                 give(sim, player, s.item, s.count);
@@ -744,11 +753,13 @@ fn craft(sim: &mut Simulation, player: u16) {
             outputs.push((i, n, 0));
         }
     }
+    let recipe_id = job.recipe;
     let done = job.count == 0;
     if done {
         c.queue.remove(0);
         c.craft_progress = Fixed::ZERO;
     }
+    sim.events.push(crate::world::GameEvent::Crafted { player, recipe: recipe_id });
     for (item, give_n, reserved) in outputs {
         sim.research_trigger(crate::research::TriggerEvent::Crafted(item, give_n + reserved));
         if reserved > 0 {

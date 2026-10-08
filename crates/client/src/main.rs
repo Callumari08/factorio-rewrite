@@ -9,6 +9,7 @@ mod chart;
 mod controls;
 mod demo;
 mod render;
+mod sound;
 mod sprites;
 mod terrain;
 mod ui;
@@ -111,6 +112,7 @@ fn main() -> AppExit {
             render::RenderPlugin,
             ui::UiPlugin,
             controls::ControlsPlugin,
+            sound::SoundPlugin,
         ))
         .add_systems(Startup, setup_camera)
         .add_systems(FixedUpdate, step_simulation)
@@ -136,9 +138,10 @@ fn setup_camera(mut commands: Commands) {
     ));
 }
 
-fn step_simulation(mut sim: ResMut<Sim>, mut pending: ResMut<PendingInputs>) {
+fn step_simulation(mut sim: ResMut<Sim>, mut pending: ResMut<PendingInputs>, mut events: ResMut<sound::SimEvents>) {
     let inputs: Vec<PlayerInput> = pending.0.drain(..).map(|a| PlayerInput::new(LOCAL_PLAYER, a)).collect();
     sim.0.step(&inputs);
+    events.0.extend(sim.0.events().iter().cloned());
 }
 
 /// `FACTORIO_REWRITE_SCREENSHOT=out.png` saves a screenshot after

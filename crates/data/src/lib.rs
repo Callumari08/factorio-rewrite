@@ -16,6 +16,7 @@ pub mod locale;
 pub mod mapgen;
 pub mod mods;
 pub mod raw;
+pub mod sound;
 pub mod sprite;
 pub mod typed;
 

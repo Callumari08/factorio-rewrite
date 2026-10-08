@@ -56,6 +56,10 @@ research the technologies you queue with `T`.
 | `F2` | Toggle cheat mode: crafting is instant and free (like the game's `/cheat`) |
 | `F3` | Research every technology |
 
+Sound volumes are your own Factorio settings, read from the game's `config.ini`
+(`~/.factorio/config/config.ini` on Linux, `%APPDATA%\Factorio\config\config.ini` on Windows,
+`~/Library/Application Support/factorio/config/config.ini` on macOS), so change them in the game.
+
 Buildings show their slots in their window: click with a held stack to put fuel, ore or
 ingredients in, and click the result slot to take output. Assemblers show a recipe chooser.
 
@@ -67,6 +71,7 @@ Optional environment variables:
 - `FACTORIO_REWRITE_UI=1` (or `power`, `lab`, `tech`) opens a window at start, for screenshots;
   `FACTORIO_REWRITE_TECH=<name>` selects a technology in the technology window.
 - `FACTORIO_REWRITE_SEED=1234` picks a different map.
+- `FACTORIO_REWRITE_SOUND_LOG=1` logs every sound that starts, with its volume.
 - `FACTORIO_REWRITE_SCREENSHOT=shot.png` (with `FACTORIO_REWRITE_SCREENSHOT_AFTER=10`)
   saves a screenshot after that many seconds and exits.
 

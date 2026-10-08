@@ -380,6 +380,7 @@ fn clicks(
     mut chart: ResMut<crate::chart::Chart>,
     mut tech: ResMut<research::TechUi>,
     mut ui: ResMut<UiState>,
+    mut gui_clicks: ResMut<crate::sound::GuiClicks>,
 ) {
     let button = if mouse.just_pressed(MouseButton::Left) {
         SimButton::Left
@@ -391,6 +392,9 @@ fn clicks(
     let Some((_, target)) = q.iter().find(|(i, _)| **i != Interaction::None) else { return };
     let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
     let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
+    if !matches!(target, UiButton::Slot(_) | UiButton::Craft(_)) {
+        gui_clicks.0 += 1;
+    }
     let player = sim.0.player(LOCAL_PLAYER);
     let held = character(&sim).and_then(|c| c.cursor).map(|c| c.item);
     match (target.clone(), button) {

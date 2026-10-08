@@ -35,11 +35,11 @@ Each step ends with a playtest. Feedback from it becomes a ".5" step before the 
 2. **Research.** Technologies from the game data, labs and science packs, the research
    queue, Factorio 2.0 research triggers, recipe unlocks, bonuses, infinite technologies
    and the technology window.
+3. **Sound.** Game sounds from the install: machine working loops, building, mining,
+   crafting, research, footsteps, GUI and inventory sounds, water and wind ambience, and
+   music, with the player's own Factorio volume settings.
 
 ## Next: the rest of step 3, in order
-
-3. **Sound.** Game sounds from the install: building, mining, crafting, machine working
-   loops, ambient sounds, UI sounds, with the game's falloff and volume settings.
 4. **Map generation parity.** Implement Factorio's noise-expression language so maps
    generate from the real `autoplace` data: terrain, resources, trees, rocks, cliffs,
    decoratives, tile transitions.

@@ -209,6 +209,7 @@ impl Simulation {
         }
         r.queue.retain(|q| *q != t);
         r.last_finished = Some((t, self.tick));
+        self.events.push(crate::world::GameEvent::ResearchFinished(t));
         let mut gifts = Vec::new();
         for e in &tech.effects {
             match e {

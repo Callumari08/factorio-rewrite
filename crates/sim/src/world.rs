@@ -49,6 +49,33 @@ pub enum EntityState {
     Lab(LabState),
 }
 
+/// Something that happened during a tick, for sounds and visual effects. Events are not
+/// game state: they are not hashed, and are cleared at the start of every step.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GameEvent {
+    Built {
+        entity: EntityProtoId,
+        position: MapPosition,
+    },
+    /// A player mined (picked up) a building.
+    Mined {
+        entity: EntityProtoId,
+        position: MapPosition,
+    },
+    /// A player mined one unit of a resource.
+    ResourceMined {
+        player: u16,
+        resource: EntityProtoId,
+        position: MapPosition,
+    },
+    /// A player's hand craft finished.
+    Crafted {
+        player: u16,
+        recipe: crate::proto::RecipeId,
+    },
+    ResearchFinished(crate::proto::TechId),
+}
+
 /// Why something could not be built.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BuildError {
@@ -89,12 +116,14 @@ pub struct Simulation {
     pub(crate) ground_items: BTreeMap<MapPosition, ItemStack>,
     pub(crate) players: BTreeMap<u16, Player>,
     pub(crate) research: Research,
+    pub(crate) events: Vec<GameEvent>,
 }
 
 impl Simulation {
     pub fn new(prototypes: Arc<PrototypeDb>, mapgen: MapGenSettings) -> Self {
         let mut sim = Simulation {
             research: Research::new(&prototypes),
+            events: Vec::new(),
             rng: DetRng::new(mapgen.seed),
             db: prototypes,
             tick: 0,
@@ -143,6 +172,11 @@ impl Simulation {
         self.ground_items.iter().map(|(p, s)| (*p, *s))
     }
 
+    /// What happened during the last [`step`](Self::step).
+    pub fn events(&self) -> &[GameEvent] {
+        &self.events
+    }
+
     pub fn rng(&mut self) -> &mut DetRng {
         &mut self.rng
     }
@@ -152,6 +186,7 @@ impl Simulation {
     /// `inputs` are sorted before being applied, so peers that receive the same set of
     /// inputs in a different network order still compute the same state.
     pub fn step(&mut self, inputs: &[PlayerInput]) {
+        self.events.clear();
         let mut inputs = inputs.to_vec();
         inputs.sort();
         for input in &inputs {
@@ -355,6 +390,7 @@ impl Simulation {
         self.entities.insert(id, Entity { proto: proto_id, position, direction, state });
         self.power.mark_dirty();
         self.research_trigger(TriggerEvent::Built(proto_id));
+        self.events.push(GameEvent::Built { entity: proto_id, position });
         Ok(id)
     }
 
