@@ -29,8 +29,6 @@ use crate::{Data, Sim, TILE};
 const HI: u32 = 64;
 const MID: u32 = 32;
 const LO: u32 = 8;
-/// Above this camera scale (zoomed out), only small textures are drawn.
-const MID_MAX_SCALE: f32 = 2.5;
 /// Time per frame spent composing chunk textures.
 const BUDGET_MS: f64 = 8.0;
 
@@ -77,6 +75,8 @@ struct Terrain {
     frame: u32,
     /// The texture being composed.
     job: Option<Job>,
+    /// Pixels per tile the view is drawn at; changes for the whole view at once.
+    display_px: u32,
 }
 
 fn load_file<'a>(
@@ -582,6 +582,33 @@ fn compose_step(terrain: &mut Terrain, sim: &Sim, data: &Data, job: &mut Job) ->
     true
 }
 
+/// The texture's mip levels (box-filtered, in sRGB as the game's are) concatenated, and
+/// how many there are.
+fn mip_chain(level0: Vec<u8>, size: u32) -> (Vec<u8>, u32) {
+    let mut data = level0.clone();
+    let mut prev = level0;
+    let mut s = size;
+    let mut levels = 1;
+    while s > 1 {
+        let n = s / 2;
+        let mut next = vec![0u8; (n * n * 4) as usize];
+        for y in 0..n {
+            for x in 0..n {
+                for ch in 0..4 {
+                    let at = |xx: u32, yy: u32| prev[((yy * s + xx) * 4 + ch) as usize] as u32;
+                    let sum = at(2 * x, 2 * y) + at(2 * x + 1, 2 * y) + at(2 * x, 2 * y + 1) + at(2 * x + 1, 2 * y + 1);
+                    next[((y * n + x) * 4 + ch) as usize] = ((sum + 2) / 4) as u8;
+                }
+            }
+        }
+        data.extend_from_slice(&next);
+        prev = next;
+        s = n;
+        levels += 1;
+    }
+    (data, levels)
+}
+
 fn chunk_sprite(
     commands: &mut Commands,
     images: &mut Assets<Image>,
@@ -591,13 +618,24 @@ fn chunk_sprite(
     z: f32,
 ) -> (Entity, Handle<Image>) {
     let size = CHUNK_SIZE as u32 * px;
-    let image = Image::new(
+    let mut image = Image::new(
         Extent3d { width: size, height: size, depth_or_array_layers: 1 },
         TextureDimension::D2,
-        pixels,
+        pixels.clone(),
         TextureFormat::Rgba8UnormSrgb,
         RenderAssetUsages::RENDER_WORLD,
     );
+    // A full mip chain sampled trilinearly, as the game does, so the ground looks the same
+    // at any zoom whichever texture detail is loaded.
+    let (data, levels) = mip_chain(pixels, size);
+    image.data = Some(data);
+    image.texture_descriptor.mip_level_count = levels;
+    image.sampler = bevy::image::ImageSampler::Descriptor(bevy::image::ImageSamplerDescriptor {
+        mag_filter: bevy::image::ImageFilterMode::Linear,
+        min_filter: bevy::image::ImageFilterMode::Linear,
+        mipmap_filter: bevy::image::ImageFilterMode::Linear,
+        ..bevy::image::ImageSamplerDescriptor::linear()
+    });
     let handle = images.add(image);
     let first = c.first_tile();
     let world = crate::map_to_world(MapPosition::from_tiles(first.x, first.y))
@@ -628,13 +666,16 @@ fn build_chunks(
         Projection::Orthographic(o) => o.scale,
         _ => 1.0,
     };
-    // The detail the view needs: the game's full 64 px art at normal zoom and closer.
-    let want = if scale <= 1.05 {
-        HI
-    } else if scale <= MID_MAX_SCALE {
-        MID
+    // Texture detail (pixels per tile) for the screen pixels a tile covers, rounded up to
+    // the next level so textures are only ever shrunk (by their mipmaps), never enlarged.
+    let screen_px = TILE / scale * window.scale_factor();
+    let needed = [LO, 16, MID, HI].into_iter().find(|px| *px as f32 >= screen_px).unwrap_or(HI);
+    let current = terrain.display_px.max(LO);
+    // Finer detail is wanted at once; coarser only once comfortably zoomed out past it.
+    let want = if needed > current || (needed < current && screen_px * 1.3 <= (current / 2) as f32) {
+        needed
     } else {
-        LO
+        current
     };
     let half = window.size() / 2.0 * scale;
     let centre = ct.translation.truncate();
@@ -696,18 +737,34 @@ fn build_chunks(
         }
     }
 
+    // The whole view switches detail together, once every visible chunk has it.
+    if want != terrain.display_px
+        && wanted.iter().all(|(_, c)| terrain.chunks.get(c).is_some_and(|v| v.levels.contains_key(&want)))
+    {
+        terrain.display_px = want;
+    }
+    let display = terrain.display_px.max(LO);
+
     // Keep the small textures; drop detail the view no longer needs.
     for (c, view) in terrain.chunks.iter_mut() {
-        let drop: Vec<u32> =
-            view.levels.keys().copied().filter(|px| *px != LO && (*px != want || !in_view.contains(c))).collect();
+        let drop: Vec<u32> = view
+            .levels
+            .keys()
+            .copied()
+            .filter(|px| *px != LO && ((*px != want && *px != display) || !in_view.contains(c)))
+            .collect();
         for px in drop {
             if let Some((e, h)) = view.levels.remove(&px) {
                 commands.entity(e).despawn();
                 images.remove(&h);
             }
         }
-        // Show the wanted detail if it is ready, else the small texture.
-        let shown = if view.levels.contains_key(&want) { want } else { LO };
+        // Show the view's detail; a chunk that does not have it yet shows the closest it has.
+        let shown = if view.levels.contains_key(&display) {
+            display
+        } else {
+            view.levels.keys().copied().min_by_key(|px| px.abs_diff(display)).unwrap_or(LO)
+        };
         for (px, (e, _)) in &view.levels {
             if let Ok(mut v) = visibility.get_mut(*e) {
                 *v = if *px == shown { Visibility::Inherited } else { Visibility::Hidden };

@@ -137,7 +137,7 @@ fn main() -> AppExit {
         ))
         .add_systems(Startup, setup_camera)
         .add_systems(FixedUpdate, step_simulation)
-        .add_systems(Update, screenshot);
+        .add_systems(Update, (screenshot, zoom_sweep));
 
     if let Some(path) = std::env::var_os("FACTORIO_REWRITE_SCREENSHOT") {
         let after = std::env::var("FACTORIO_REWRITE_SCREENSHOT_AFTER").ok().and_then(|s| s.parse().ok()).unwrap_or(4.0);
@@ -188,6 +188,38 @@ fn screenshot(
             exit.write(AppExit::Success);
         }
         _ => {}
+    }
+}
+
+/// `FACTORIO_REWRITE_ZOOM_SWEEP=dir` (after six seconds to load) zooms the camera from 1
+/// out to 6 and back over 12 seconds, saving a screenshot to `dir` every half second, then
+/// exits. For checking that the ground's level of detail switches without popping.
+fn zoom_sweep(
+    mut commands: Commands,
+    time: Res<Time<Real>>,
+    mut cam: Query<&mut Projection, With<Camera2d>>,
+    mut last: Local<Option<i32>>,
+    mut exit: MessageWriter<AppExit>,
+) {
+    let Some(dir) = std::env::var_os("FACTORIO_REWRITE_ZOOM_SWEEP") else { return };
+    let t = time.elapsed_secs() - 6.0;
+    if t < 0.0 {
+        return;
+    }
+    let scale = if t < 6.0 { 1.0 + 5.0 * t / 6.0 } else { (6.0 - 5.0 * (t - 6.0) / 6.0).max(1.0) };
+    if let Ok(mut p) = cam.single_mut()
+        && let Projection::Orthographic(o) = p.as_mut()
+    {
+        o.scale = scale;
+    }
+    let frame = (t / 0.5) as i32;
+    if *last != Some(frame) && t <= 12.5 {
+        *last = Some(frame);
+        let path = std::path::Path::new(&dir).join(format!("sweep{frame:02}.png"));
+        commands.spawn(Screenshot::primary_window()).observe(save_to_disk(path));
+    }
+    if t > 13.5 {
+        exit.write(AppExit::Success);
     }
 }
 
