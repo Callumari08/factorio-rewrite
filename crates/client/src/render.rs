@@ -264,6 +264,12 @@ fn entity_look_single(
     }
 }
 
+/// A small number per sheet (0..997), to group sprites of the same sheet in draw order.
+fn sheet_slot(image: &Handle<Image>) -> f32 {
+    use std::hash::BuildHasher;
+    (std::hash::BuildHasherDefault::<std::hash::DefaultHasher>::default().hash_one(image.id()) % 997) as f32
+}
+
 fn sync_entities(
     mut commands: Commands,
     sim: Res<Sim>,
@@ -354,7 +360,9 @@ fn sync_entities(
                 for (i, ((l, kind), ent)) in layers.iter().zip(&m.layers).enumerate() {
                     let at = pos + l.shift();
                     let (z, color) = match kind {
-                        LayerKind::Shadow => (-3.0 + i as f32 * 1e-6, Color::srgba(0.0, 0.0, 0.0, 0.55)),
+                        // Shadows are all below everything else; grouping them by sheet
+                        // lets each sheet's shadows draw as one batch.
+                        LayerKind::Shadow => (-3.0 + sheet_slot(&l.image) * 1e-3, Color::srgba(0.0, 0.0, 0.0, 0.55)),
                         LayerKind::Normal => (depth(pos.y, layer) + i as f32 * 1e-6, Color::WHITE),
                         LayerKind::Tinted([r, g, b, a]) => {
                             (depth(pos.y, layer) + i as f32 * 1e-6, Color::srgba_u8(*r, *g, *b, *a))

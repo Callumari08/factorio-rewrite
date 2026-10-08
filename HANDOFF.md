@@ -29,12 +29,13 @@ Read this first when picking the project up in a new session. See also
   factorio-data --example mapimage -- map.ppm 24 [seed]` renders a map for checking.
   Trees and rocks are generated (`EntityState::Static`, minable, collidable; trees come
   from the `trees` autoplace control). The renderer now only mirrors on-screen entities.
-  Ground (`terrain.rs`): chunk textures at 8/16/32/64 px per tile, each with a full mip
-  chain sampled trilinearly. The level is the next one at or above the screen pixels a
-  tile covers (with hysteresis when zooming out), and the whole view switches level at
-  once when every visible chunk has it; an 8 px texture per visible chunk is the fallback.
-  Composed on the CPU a tile row at a time within a per-frame budget. The camera snaps to
-  whole screen pixels. `FACTORIO_REWRITE_ZOOM_SWEEP=dir` captures a zoom sweep. Tile
+  Ground (`terrain.rs`): drawn on the GPU like the game. Tile, mask, shore and decorative
+  sheets are loaded once with full mip chains (trilinear); each chunk is static quads
+  into them (`masked_tile.wgsl`: picture times mask, samples clamped to their sheet cell
+  at the mip level in use, so no seams). Settled chunks merge into 8×8-chunk region
+  meshes (few draws per sheet). Zoom recomposes nothing. The camera snaps to whole screen
+  pixels. `FACTORIO_REWRITE_ZOOM_SWEEP=dir` captures a zoom sweep and logs ms/frame
+  (3.6 ms at zoom 1, 5.1 ms at 6x on a 7900 XTX; the rest is entity sprite batches). Tile
   edges use `variants.transition` masks; shores use the land tiles' `transitions` to
   water (mask, bank overlay, background; two-tile-tall pieces); water and deep water blend
   with a soft ramp. Not done: the animated water shader (`tile-effect` "water"), effect

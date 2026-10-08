@@ -201,6 +201,7 @@ fn zoom_sweep(
     time: Res<Time<Real>>,
     mut cam: Query<&mut Projection, With<Camera2d>>,
     mut last: Local<Option<i32>>,
+    mut stats: Local<(i32, u32, f32, f32)>,
     mut exit: MessageWriter<AppExit>,
 ) {
     let Some(dir) = std::env::var_os("FACTORIO_REWRITE_ZOOM_SWEEP") else { return };
@@ -208,6 +209,24 @@ fn zoom_sweep(
     if t < 0.0 {
         return;
     }
+    // Frame times per second of the sweep: frames, total and worst ms.
+    let ms = time.delta_secs() * 1000.0;
+    let second = t as i32;
+    if stats.0 != second {
+        if stats.1 > 0 {
+            info!(
+                "sweep second {}: {} frames, mean {:.2} ms, worst {:.2} ms",
+                stats.0,
+                stats.1,
+                stats.2 / stats.1 as f32,
+                stats.3
+            );
+        }
+        *stats = (second, 0, 0.0, 0.0);
+    }
+    stats.1 += 1;
+    stats.2 += ms;
+    stats.3 = stats.3.max(ms);
     let scale = if t < 6.0 { 1.0 + 5.0 * t / 6.0 } else { (6.0 - 5.0 * (t - 6.0) / 6.0).max(1.0) };
     if let Ok(mut p) = cam.single_mut()
         && let Projection::Orthographic(o) = p.as_mut()

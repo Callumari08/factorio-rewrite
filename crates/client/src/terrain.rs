@@ -1,23 +1,24 @@
-//! Draws the ground: textures per chunk, composed on the CPU from the game's tile
-//! textures and decoratives, plus resource deposits as sprites.
+//! Draws the ground on the GPU, like the game: the tile, transition, shore and decorative
+//! sheets from the install are loaded once with full mipmaps (sampled trilinearly), and
+//! each chunk gets static meshes of quads pointing into them. Zooming only moves the
+//! camera; the mipmaps give the right detail at any zoom with nothing recomposed.
 //!
-//! Chunks in view get a texture at the detail the zoom needs: the game's full 64 px art at
-//! normal zoom and closer (as on its high graphics quality), 32 px when a little zoomed
-//! out, and a small 8 px one that every visible chunk keeps (shown when far out or while
-//! a detailed one is being made). Textures are composed a tile row at a time within a
-//! per-frame budget, and detailed ones out of view are dropped again.
-//!
-//! Tiles use their 1x1, 2x2 and 4x4 pictures (the bigger ones wherever an aligned block is
-//! all the same tile, as the game does). Tile edges use the game's transition masks: where
-//! a tile borders one of a higher `layer`, the higher tile is drawn into it through mask
-//! pieces chosen from which sides and corners it touches.
+//! Tiles use their 4x4 and 2x2 pictures where an aligned block is one tile (as the game
+//! does), else a 1x1 variant. Where a tile borders one of a higher `layer`, the higher
+//! tile is drawn into it through the pieces of its transition mask sheet (a small shader
+//! multiplies the picture by the mask). Shores use the land tiles' `transitions` to
+//! water: background, mask and bank overlay pieces, up to two tiles tall. Water meets deep
+//! water through a soft mask made at startup. Resource deposits are sprites on top.
 
 use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 
-use bevy::asset::RenderAssetUsages;
+use bevy::asset::{RenderAssetUsages, uuid_handle};
+use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
-use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
-use bevy::window::PrimaryWindow;
+use bevy::render::render_resource::{AsBindGroup, Extent3d, TextureDimension, TextureFormat};
+use bevy::shader::ShaderRef;
+use bevy::sprite_render::{AlphaMode2d, Material2d, Material2dPlugin};
 use factorio_sim::map::{CHUNK_SIZE, ChunkPosition, MapPosition, TilePosition};
 use factorio_sim::noise::hash;
 use factorio_sim::proto::{EntityData, EntityProtoId, TileId};
@@ -25,20 +26,45 @@ use factorio_sim::proto::{EntityData, EntityProtoId, TileId};
 use crate::sprites::Sprites;
 use crate::{Data, Sim, TILE};
 
-/// Pixels per tile of the chunk textures: the game's full art (64), half (32) and small (8).
-const HI: u32 = 64;
-const MID: u32 = 32;
-const LO: u32 = 8;
-/// Time per frame spent composing chunk textures.
-const BUDGET_MS: f64 = 8.0;
+const MASKED_SHADER: Handle<Shader> = uuid_handle!("6f0b5a4e-2f3c-4d0a-9a51-1c7e0c3b8d21");
+
+/// How far (in chunks) around the camera ground meshes are kept.
+const KEEP_CHUNKS: i32 = 12;
+/// Chunks meshed per frame at most.
+const BUILD_PER_FRAME: usize = 8;
 
 pub struct TerrainPlugin;
 
 impl Plugin for TerrainPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Terrain>()
+        bevy::asset::load_internal_asset!(app, MASKED_SHADER, "masked_tile.wgsl", Shader::from_wgsl);
+        app.add_plugins(Material2dPlugin::<MaskedTile>::default())
+            .init_resource::<Terrain>()
             .init_resource::<GroundReady>()
             .add_systems(Update, (build_chunks, update_resources).chain());
+    }
+}
+
+/// A ground picture, optionally drawn through a mask (see `masked_tile.wgsl`).
+#[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
+pub struct MaskedTile {
+    #[texture(0)]
+    #[sampler(1)]
+    color: Handle<Image>,
+    #[texture(2)]
+    #[sampler(3)]
+    mask: Handle<Image>,
+}
+
+impl Material2d for MaskedTile {
+    fn vertex_shader() -> ShaderRef {
+        ShaderRef::Handle(MASKED_SHADER)
+    }
+    fn fragment_shader() -> ShaderRef {
+        ShaderRef::Handle(MASKED_SHADER)
+    }
+    fn alpha_mode(&self) -> AlphaMode2d {
+        AlphaMode2d::Blend
     }
 }
 
@@ -50,146 +76,234 @@ pub struct GroundReady(pub HashSet<ChunkPosition>);
 struct ChunkView {
     scanned: bool,
     resources: HashMap<TilePosition, (Entity, EntityProtoId, u32)>,
-    /// Textures by pixels per tile.
-    levels: HashMap<u32, (Entity, Handle<Image>)>,
+    /// Whether the ground is built: drawn by `ground`, or by its region's meshes.
+    built: bool,
+    /// The ground's quads, kept until its region is merged.
+    parts: Option<Parts>,
+    ground: Vec<Entity>,
 }
 
-/// Per pixel density: tile pictures by block size, masks and decoratives.
-#[derive(Default)]
-struct Level {
-    /// (tile, block size) → variants, each (size*px)² RGBA.
-    blocks: HashMap<(TileId, u32), Vec<Vec<u8>>>,
-    masks: HashMap<TileId, Option<Masks>>,
-    decoratives: HashMap<(u16, u8), Option<(image::RgbaImage, i32, i32)>>,
-    shores: HashMap<TileId, Vec<ShoreSet>>,
+/// A loaded sheet: its texture (with mipmaps) and size in pixels.
+#[derive(Clone)]
+struct Sheet {
+    image: Handle<Image>,
+    size: Vec2,
 }
 
 #[derive(Resource, Default)]
 struct Terrain {
     chunks: HashMap<ChunkPosition, ChunkView>,
-    levels: HashMap<u32, Level>,
-    /// Decoratives per chunk, kept so neighbouring chunks can draw the parts that reach
-    /// over their edge.
-    placed: HashMap<ChunkPosition, Vec<factorio_sim::mapgen::PlacedDecorative>>,
-    files: HashMap<std::path::PathBuf, Option<image::RgbaImage>>,
+    /// Merged ground meshes by region.
+    regions: HashMap<(i32, i32), Region>,
+    sheets: HashMap<(PathBuf, bool), Option<Sheet>>,
+    white: Option<Handle<Image>>,
+    masked: HashMap<(Handle<Image>, Handle<Image>), Handle<MaskedTile>>,
+    /// Tile pictures by (tile, block size): sheet and pixel rects of the variants.
+    blocks: HashMap<(TileId, u32), Option<(PathBuf, Vec<Rect>)>>,
+    transitions: HashMap<TileId, Option<factorio_data::sprite::TileTransition>>,
+    shores: HashMap<TileId, Vec<factorio_data::sprite::Shore>>,
+    decorative_sprites: HashMap<(u16, u8), Option<factorio_data::sprite::SpriteRef>>,
+    soft: Option<Sheet>,
     frame: u32,
-    /// The texture being composed.
-    job: Option<Job>,
-    /// Pixels per tile the view is drawn at; changes for the whole view at once.
-    display_px: u32,
+    ground_frame: u32,
 }
 
-fn load_file<'a>(
-    files: &'a mut HashMap<std::path::PathBuf, Option<image::RgbaImage>>,
-    path: &std::path::Path,
-) -> Option<&'a image::RgbaImage> {
-    files.entry(path.to_owned()).or_insert_with(|| image::open(path).ok().map(|i| i.to_rgba8())).as_ref()
+/// The texture's mip levels (box-filtered) concatenated, and how many there are.
+fn mip_chain(level0: Vec<u8>, width: u32, height: u32) -> (Vec<u8>, u32) {
+    let mut data = level0.clone();
+    let mut prev = level0;
+    let (mut w, mut h) = (width, height);
+    let mut levels = 1;
+    while w > 1 || h > 1 {
+        let (nw, nh) = ((w / 2).max(1), (h / 2).max(1));
+        let mut next = vec![0u8; (nw * nh * 4) as usize];
+        for y in 0..nh {
+            for x in 0..nw {
+                for ch in 0..4 {
+                    let at = |xx: u32, yy: u32| prev[((yy.min(h - 1) * w + xx.min(w - 1)) * 4 + ch) as usize] as u32;
+                    let sum = at(2 * x, 2 * y) + at(2 * x + 1, 2 * y) + at(2 * x, 2 * y + 1) + at(2 * x + 1, 2 * y + 1);
+                    next[((y * nw + x) * 4 + ch) as usize] = ((sum + 2) / 4) as u8;
+                }
+            }
+        }
+        data.extend_from_slice(&next);
+        prev = next;
+        (w, h) = (nw, nh);
+        levels += 1;
+    }
+    (data, levels)
+}
+
+/// An RGBA image with a full mip chain and trilinear sampling. Masks are linear data.
+fn mipmapped(pixels: Vec<u8>, width: u32, height: u32, linear: bool) -> Image {
+    let (data, levels) = mip_chain(pixels, width, height);
+    let format = if linear { TextureFormat::Rgba8Unorm } else { TextureFormat::Rgba8UnormSrgb };
+    let mut image = Image::new_fill(
+        Extent3d { width, height, depth_or_array_layers: 1 },
+        TextureDimension::D2,
+        &[0, 0, 0, 0],
+        format,
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    image.data = Some(data);
+    image.texture_descriptor.mip_level_count = levels;
+    image.sampler = bevy::image::ImageSampler::Descriptor(bevy::image::ImageSamplerDescriptor {
+        mag_filter: bevy::image::ImageFilterMode::Linear,
+        min_filter: bevy::image::ImageFilterMode::Linear,
+        mipmap_filter: bevy::image::ImageFilterMode::Linear,
+        ..bevy::image::ImageSamplerDescriptor::linear()
+    });
+    image
 }
 
 impl Terrain {
-    /// The variants of a tile's `size`×`size` block picture at `px` per tile; falls back to
-    /// single tiles (and to the map colour when there is no picture).
-    fn blocks(&mut self, data: &Data, sim: &Sim, tile: TileId, size: u32, px: u32) -> &Vec<Vec<u8>> {
-        let key = (tile, size);
-        if !self.levels.entry(px).or_default().blocks.contains_key(&key) {
-            let proto = sim.0.prototypes().tile(tile);
-            let mut out = Vec::new();
-            for (s, sprites) in factorio_data::sprite::tile_variant_sets(&data.0, &proto.name) {
-                if s != size {
-                    continue;
-                }
-                for v in sprites {
-                    let Some(img) = load_file(&mut self.files, &v.path) else { continue };
-                    if v.x + v.width > img.width() || v.y + v.height > img.height() {
-                        continue;
-                    }
-                    let crop = image::imageops::crop_imm(img, v.x, v.y, v.width, v.height).to_image();
-                    let n = px * size;
-                    out.push(image::imageops::resize(&crop, n, n, image::imageops::FilterType::CatmullRom).into_raw());
-                }
-            }
-            if out.is_empty() && size == 1 {
-                let [r, g, b] = proto.map_color;
-                out.push([r, g, b, 255].repeat((px * px) as usize));
-            }
-            self.levels.get_mut(&px).unwrap().blocks.insert(key, out);
-        }
-        &self.levels[&px].blocks[&key]
+    fn sheet(&mut self, images: &mut Assets<Image>, path: &Path, linear: bool) -> Option<Sheet> {
+        self.sheets
+            .entry((path.to_owned(), linear))
+            .or_insert_with(|| {
+                let img = image::open(path).ok()?.to_rgba8();
+                let (w, h) = img.dimensions();
+                let handle = images.add(mipmapped(img.into_raw(), w, h, linear));
+                Some(Sheet { image: handle, size: Vec2::new(w as f32, h as f32) })
+            })
+            .clone()
     }
 
-    /// One tile's picture: from a 4x4 or 2x2 block picture when its aligned block is all
-    /// this tile, else a single-tile variant.
-    fn tile_pixels(&mut self, data: &Data, sim: &Sim, tile: TileId, t: TilePosition, px: u32) -> Vec<u8> {
-        let surface = &sim.0.surface;
-        for size in [4i32, 2] {
-            let (bx, by) = (t.x.div_euclid(size) * size, t.y.div_euclid(size) * size);
-            let whole =
-                (0..size).all(|dy| (0..size).all(|dx| surface.tile(TilePosition::new(bx + dx, by + dy)) == Some(tile)));
-            if !whole {
-                continue;
-            }
-            let pick = hash(7, 10 + size as u32, bx, by) as usize;
-            let set = self.blocks(data, sim, tile, size as u32, px);
-            if set.is_empty() {
-                continue;
-            }
-            let block = &set[pick % set.len()];
-            let (ox, oy) = ((t.x - bx) as u32 * px, (t.y - by) as u32 * px);
-            let stride = (size as u32 * px * 4) as usize;
-            let mut out = Vec::with_capacity((px * px * 4) as usize);
+    /// A 1×1 white mask, for pictures drawn without one.
+    fn white(&mut self, images: &mut Assets<Image>) -> Handle<Image> {
+        self.white.get_or_insert_with(|| images.add(mipmapped(vec![255; 4], 1, 1, true))).clone()
+    }
+
+    fn masked_material(
+        &mut self,
+        materials: &mut Assets<MaskedTile>,
+        color: &Handle<Image>,
+        mask: &Handle<Image>,
+    ) -> Handle<MaskedTile> {
+        self.masked
+            .entry((color.clone(), mask.clone()))
+            .or_insert_with(|| materials.add(MaskedTile { color: color.clone(), mask: mask.clone() }))
+            .clone()
+    }
+
+    /// The pictures of a tile's `size`×`size` blocks: their sheet and variant rects.
+    fn blocks(&mut self, data: &Data, sim: &Sim, tile: TileId, size: u32) -> Option<(PathBuf, Vec<Rect>)> {
+        self.blocks
+            .entry((tile, size))
+            .or_insert_with(|| {
+                let name = &sim.0.prototypes().tile(tile).name;
+                let (_, sprites) =
+                    factorio_data::sprite::tile_variant_sets(&data.0, name).into_iter().find(|(s, _)| *s == size)?;
+                let path = sprites.first()?.path.clone();
+                let rects = sprites
+                    .iter()
+                    .filter(|v| v.path == path)
+                    .map(|v| Rect::new(v.x as f32, v.y as f32, (v.x + v.width) as f32, (v.y + v.height) as f32))
+                    .collect();
+                Some((path, rects))
+            })
+            .clone()
+    }
+
+    /// A 64 px soft mask sheet for water meeting deep water: column 0 the four sides,
+    /// column 1 the four corners (rotations N/NE, E/SE, S/SW, W/NW).
+    fn soft(&mut self, images: &mut Assets<Image>) -> Sheet {
+        if let Some(s) = &self.soft {
+            return s.clone();
+        }
+        let px = 64u32;
+        let (w, h) = (2 * px, 4 * px);
+        let mut pixels = vec![0u8; (w * h * 4) as usize];
+        for rot in 0..4 {
             for y in 0..px {
-                let start = (oy + y) as usize * stride + (ox * 4) as usize;
-                out.extend_from_slice(&block[start..start + (px * 4) as usize]);
+                for x in 0..px {
+                    let (fx, fy) = ((x as f32 + 0.5) / px as f32, (y as f32 + 0.5) / px as f32);
+                    let side = [fy, 1.0 - fx, 1.0 - fy, fx][rot as usize];
+                    let corner = [(1.0, 0.0), (1.0, 1.0), (0.0, 1.0), (0.0, 0.0)][rot as usize];
+                    let cd = ((fx - corner.0).powi(2) + (fy - corner.1).powi(2)).sqrt();
+                    for (col, d) in [(0u32, side), (1, cd)] {
+                        let t = (1.0f32 - d).clamp(0.0, 1.0);
+                        let v = (t * t * (3.0 - 2.0 * t) * 255.0) as u8;
+                        let i = (((rot * px + y) * w + col * px + x) * 4) as usize;
+                        pixels[i..i + 4].copy_from_slice(&[v, v, v, 255]);
+                    }
+                }
             }
-            return out;
         }
-        let set = self.blocks(data, sim, tile, 1, px);
-        set[hash(7, 1, t.x, t.y) as usize % set.len()].clone()
+        let s = Sheet { image: images.add(mipmapped(pixels, w, h, true)), size: Vec2::new(w as f32, h as f32) };
+        self.soft = Some(s.clone());
+        s
     }
 }
 
-/// A tile's transition mask pieces at px×px: per variant, the four rotations (N, E, S, W).
-struct Masks {
-    inner: Vec<[Vec<u8>; 4]>,
-    outer: Vec<[Vec<u8>; 4]>,
-    side: Vec<[Vec<u8>; 4]>,
-    u: Vec<[Vec<u8>; 4]>,
-    o: Vec<[Vec<u8>; 4]>,
+/// Quads for one mesh: positions in world units, UVs, and an optional second UV (the mask)
+/// carried in the vertex colour.
+#[derive(Default, Clone)]
+struct Quads {
+    pos: Vec<[f32; 3]>,
+    uv: Vec<[f32; 2]>,
+    color_rect: Vec<[f32; 4]>,
+    mask_rect: Vec<[f32; 4]>,
+    idx: Vec<u32>,
 }
 
-impl Terrain {
-    fn masks(&mut self, data: &Data, sim: &Sim, tile: TileId, px: u32) -> Option<&Masks> {
-        let level = self.levels.entry(px).or_default();
-        if let std::collections::hash_map::Entry::Vacant(slot) = level.masks.entry(tile) {
-            let name = sim.0.prototypes().tile(tile).name.clone();
-            let loaded = factorio_data::sprite::tile_transition(&data.0, &name).and_then(|t| {
-                let img = image::open(&t.sheet).ok()?.to_luma8();
-                let cut = |p: factorio_data::sprite::MaskPieces| -> Vec<[Vec<u8>; 4]> {
-                    (0..p.count)
-                        .filter_map(|v| {
-                            let rot = |r: u32| -> Option<Vec<u8>> {
-                                let (x, y) = (p.x + v * t.size, t.y + r * t.size);
-                                (x + t.size <= img.width() && y + t.size <= img.height()).then(|| {
-                                    let crop = image::imageops::crop_imm(&img, x, y, t.size, t.size).to_image();
-                                    image::imageops::resize(&crop, px, px, image::imageops::FilterType::CatmullRom)
-                                        .into_raw()
-                                })
-                            };
-                            Some([rot(0)?, rot(1)?, rot(2)?, rot(3)?])
-                        })
-                        .collect()
-                };
-                Some(Masks {
-                    inner: cut(t.inner_corner),
-                    outer: cut(t.outer_corner),
-                    side: cut(t.side),
-                    u: cut(t.u_transition),
-                    o: cut(t.o_transition),
-                })
-            });
-            slot.insert(loaded);
+/// UV rect of a pixel rect (the shader keeps samples inside it).
+fn uv_rect(r: Rect, size: Vec2) -> Rect {
+    Rect::new(r.min.x / size.x, r.min.y / size.y, r.max.x / size.x, r.max.y / size.y)
+}
+
+/// The whole of the white mask (for unmasked ground pictures).
+const NO_MASK: Rect = Rect { min: Vec2::ZERO, max: Vec2::ONE };
+
+impl Quads {
+    /// A quad covering tiles from (x, y) (top left) for w×h tiles.
+    fn add(&mut self, x: f32, y: f32, w: f32, h: f32, uv: Rect, mask: Option<Rect>) {
+        let base = self.pos.len() as u32;
+        let (x0, y0, x1, y1) = (x * TILE, -y * TILE, (x + w) * TILE, -(y + h) * TILE);
+        self.pos.extend([[x0, y0, 0.0], [x1, y0, 0.0], [x1, y1, 0.0], [x0, y1, 0.0]]);
+        self.uv.extend([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]);
+        self.color_rect.extend([[uv.min.x, uv.min.y, uv.max.x, uv.max.y]; 4]);
+        let m = mask.unwrap_or(NO_MASK);
+        self.mask_rect.extend([[m.min.x, m.min.y, m.max.x, m.max.y]; 4]);
+        self.idx.extend([base, base + 2, base + 1, base, base + 3, base + 2]);
+    }
+
+    fn mesh(self) -> Mesh {
+        Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD)
+            .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, self.pos)
+            .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, self.uv)
+            .with_inserted_attribute(Mesh::ATTRIBUTE_TANGENT, self.color_rect)
+            .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, self.mask_rect)
+            .with_inserted_indices(Indices::U32(self.idx))
+    }
+}
+
+/// Mesh parts of a chunk, by draw order and material.
+#[derive(Default, Clone)]
+struct Parts {
+    plain: HashMap<(i32, Handle<Image>), Quads>,
+    masked: HashMap<(i32, Handle<Image>, Handle<Image>), Quads>,
+}
+
+impl Quads {
+    fn append(&mut self, other: Quads) {
+        let base = self.pos.len() as u32;
+        self.pos.extend(other.pos);
+        self.uv.extend(other.uv);
+        self.color_rect.extend(other.color_rect);
+        self.mask_rect.extend(other.mask_rect);
+        self.idx.extend(other.idx.into_iter().map(|i| i + base));
+    }
+}
+
+impl Parts {
+    fn append(&mut self, other: Parts) {
+        for (k, q) in other.plain {
+            self.plain.entry(k).or_default().append(q);
         }
-        self.levels[&px].masks[&tile].as_ref()
+        for (k, q) in other.masked {
+            self.masked.entry(k).or_default().append(q);
+        }
     }
 }
 
@@ -226,173 +340,62 @@ fn pick_pieces(edges: [bool; 4], corners: [bool; 4]) -> Vec<(Piece, usize)> {
     out
 }
 
-/// The mask through which a higher tile covers a cell. `None` when it does not touch it.
-fn transition_mask(m: &Masks, edges: [bool; 4], corners: [bool; 4], pick: u32, px: u32) -> Option<Vec<u8>> {
-    let pieces = pick_pieces(edges, corners);
-    if pieces.is_empty() {
-        return None;
-    }
-    let mut out = vec![0u8; (px * px) as usize];
-    for (kind, rot) in pieces {
-        let set = match kind {
-            Piece::Inner => &m.inner,
-            Piece::Outer => &m.outer,
-            Piece::Side => &m.side,
-            Piece::U => &m.u,
-            Piece::O => &m.o,
-        };
-        if set.is_empty() {
-            continue;
-        }
-        for (o, v) in out.iter_mut().zip(&set[pick as usize % set.len()][rot]) {
-            *o = (*o).max(*v);
-        }
-    }
-    Some(out)
-}
+/// Draw order of ground layers (higher is on top): base tiles, then transitions by the
+/// higher tile's layer, shores, decoratives.
+const ORDER_BASE: i32 = 0;
+const ORDER_TRANSITION: i32 = 1000;
+const ORDER_SHORE_BACKGROUND: i32 = 3000;
+const ORDER_SHORE_MASK: i32 = 3001;
+const ORDER_SHORE_OVERLAY: i32 = 3002;
+const ORDER_DECORATIVE: i32 = 4000;
 
-/// Soft edges where two water tiles meet (water and deep water have no masks of their own;
-/// the game blends them in its water shader): a smooth ramp from each touching side.
-fn soft_mask(edges: [bool; 4], corners: [bool; 4], px: u32) -> Option<Vec<u8>> {
-    if !edges.iter().chain(&corners).any(|e| *e) {
-        return None;
-    }
-    let mut out = vec![0u8; (px * px) as usize];
-    for y in 0..px {
-        for x in 0..px {
-            let (fx, fy) = ((x as f32 + 0.5) / px as f32, (y as f32 + 0.5) / px as f32);
-            // Distance (in tiles) to each touching side or corner.
-            let mut d = f32::INFINITY;
-            let side = [fy, 1.0 - fx, 1.0 - fy, fx];
-            for (i, e) in edges.iter().enumerate() {
-                if *e {
-                    d = d.min(side[i]);
-                }
-            }
-            let corner = [(1.0, 0.0), (1.0, 1.0), (0.0, 1.0), (0.0, 0.0)];
-            for (i, c) in corners.iter().enumerate() {
-                if *c {
-                    let (cx, cy) = corner[i];
-                    d = d.min(((fx - cx).powi(2) + (fy - cy).powi(2)).sqrt());
-                }
-            }
-            let t = (1.0 - d).clamp(0.0, 1.0);
-            out[(y * px + x) as usize] = (t * t * (3.0 - 2.0 * t) * 255.0) as u8;
-        }
-    }
-    Some(out)
-}
-
-/// A land tile's shore pieces at px per tile: per piece kind, variants × rotations, each
-/// mask px×px and overlay/background px×(px*tile_height) RGBA.
-struct ShoreSet {
-    to_tiles: Vec<TileId>,
-    pieces: Vec<(Piece, u32, Vec<[ShorePiece; 4]>)>,
-}
-
-#[derive(Clone)]
-struct ShorePiece {
-    mask: Vec<u8>,
-    overlay: Vec<u8>,
-    background: Option<Vec<u8>>,
-}
-
-impl Terrain {
-    fn shores(&mut self, data: &Data, sim: &Sim, tile: TileId, px: u32) -> &Vec<ShoreSet> {
-        if !self.levels.entry(px).or_default().shores.contains_key(&tile) {
-            let db = sim.0.prototypes();
-            let name = db.tile(tile).name.clone();
-            let mut sets = Vec::new();
-            for sh in factorio_data::sprite::tile_shores(&data.0, &name) {
-                let to_tiles: Vec<TileId> = sh.to_tiles.iter().filter_map(|n| db.tile_id(n)).collect();
-                let Some(img) = load_file(&mut self.files, &sh.sheet).cloned() else { continue };
-                let cut = |x: u32, y: u32, h: u32, out_h: u32| -> Option<Vec<u8>> {
-                    (x + sh.size <= img.width() && y + h <= img.height()).then(|| {
-                        let c = image::imageops::crop_imm(&img, x, y, sh.size, h).to_image();
-                        image::imageops::resize(&c, px, out_h, image::imageops::FilterType::CatmullRom).into_raw()
-                    })
-                };
-                let mut pieces = Vec::new();
-                for (kind, p) in [
-                    (Piece::Inner, sh.inner_corner),
-                    (Piece::Outer, sh.outer_corner),
-                    (Piece::Side, sh.side),
-                    (Piece::U, sh.u_transition),
-                    (Piece::O, sh.o_transition),
-                ] {
-                    let rotations = if kind == Piece::O { 1 } else { 4 };
-                    let h = p.tile_height.max(1);
-                    let variants: Vec<[ShorePiece; 4]> = (0..p.count)
-                        .filter_map(|v| {
-                            let rot = |r: u32| -> Option<ShorePiece> {
-                                let x = v * sh.size;
-                                Some(ShorePiece {
-                                    mask: {
-                                        let m = cut(sh.mask_x + x, p.y + r * sh.size, sh.size, px)?;
-                                        // The mask's own alpha or brightness selects the land.
-                                        m.chunks(4).map(|c| ((c[0] as u32 * c[3] as u32) / 255) as u8).collect()
-                                    },
-                                    overlay: cut(sh.overlay_x + x, p.y + r * sh.size * h, sh.size * h, px * h)?,
-                                    background: sh
-                                        .background_x
-                                        .and_then(|bx| cut(bx + x, p.y + r * sh.size * h, sh.size * h, px * h)),
-                                })
-                            };
-                            let r0 = rot(0)?;
-                            if rotations == 1 {
-                                return Some([r0.clone(), r0.clone(), r0.clone(), r0]);
-                            }
-                            Some([r0, rot(1)?, rot(2)?, rot(3)?])
-                        })
-                        .collect();
-                    pieces.push((kind, h, variants));
-                }
-                sets.push(ShoreSet { to_tiles, pieces });
-            }
-            self.levels.get_mut(&px).unwrap().shores.insert(tile, sets);
-        }
-        &self.levels[&px].shores[&tile]
-    }
-}
-
-/// Composes a chunk's ground at `px` pixels per tile.
-/// A chunk texture being composed a row at a time: tile rows, then shore rows (from the
-/// row above the chunk), then decoratives.
-struct Job {
-    c: ChunkPosition,
-    px: u32,
-    pixels: Vec<u8>,
-    step: i32,
-}
-
-const SHORE_STEP: i32 = CHUNK_SIZE;
-const DECORATIVE_STEP: i32 = 2 * CHUNK_SIZE + 1;
-
-impl Job {
-    fn new(c: ChunkPosition, px: u32) -> Self {
-        let size = CHUNK_SIZE as u32 * px;
-        Job { c, px, pixels: vec![0u8; (size * size * 4) as usize], step: 0 }
-    }
-}
-
-/// Does the next step of a job; true when the texture is finished.
-fn compose_step(terrain: &mut Terrain, sim: &Sim, data: &Data, job: &mut Job) -> bool {
+fn build_parts(terrain: &mut Terrain, sim: &Sim, data: &Data, images: &mut Assets<Image>, c: ChunkPosition) -> Parts {
     let db = sim.0.prototypes();
-    let (c, px) = (job.c, job.px);
-    let size = CHUNK_SIZE as u32 * px;
-    let pixels = &mut job.pixels;
+    let surface = &sim.0.surface;
     let first = c.first_tile();
-    let step = job.step;
-    job.step += 1;
-    if step < SHORE_STEP {
-        let ty = step;
-        for tx in 0..CHUNK_SIZE {
-            let t = TilePosition::new(first.x + tx, first.y + ty);
-            let Some(tile) = sim.0.surface.tile(t) else { continue };
-            let mut cell = terrain.tile_pixels(data, sim, tile, t, px);
-            // Neighbours N, E, S, W, then NE, SE, SW, NW.
+    let mut parts = Parts::default();
+    // Base tiles, biggest blocks first.
+    let mut covered = vec![false; (CHUNK_SIZE * CHUNK_SIZE) as usize];
+    for size in [4i32, 2, 1] {
+        for ly in (0..CHUNK_SIZE).step_by(size as usize) {
+            for lx in (0..CHUNK_SIZE).step_by(size as usize) {
+                let t = TilePosition::new(first.x + lx, first.y + ly);
+                let Some(tile) = surface.tile(t) else { continue };
+                let cells = (0..size).flat_map(|dy| (0..size).map(move |dx| (lx + dx, ly + dy)));
+                let whole = cells.clone().all(|(x, y)| {
+                    !covered[(y * CHUNK_SIZE + x) as usize]
+                        && surface.tile(TilePosition::new(first.x + x, first.y + y)) == Some(tile)
+                });
+                if !whole {
+                    continue;
+                }
+                let Some((path, rects)) = terrain.blocks(data, sim, tile, size as u32) else { continue };
+                if rects.is_empty() {
+                    continue;
+                }
+                let Some(sheet) = terrain.sheet(images, &path, false) else { continue };
+                let r = rects[hash(7, 10 + size as u32, t.x, t.y) as usize % rects.len()];
+                parts.plain.entry((ORDER_BASE, sheet.image.clone())).or_default().add(
+                    t.x as f32,
+                    t.y as f32,
+                    size as f32,
+                    size as f32,
+                    uv_rect(r, sheet.size),
+                    None,
+                );
+                for (x, y) in cells {
+                    covered[(y * CHUNK_SIZE + x) as usize] = true;
+                }
+            }
+        }
+    }
+    // Transitions and shores.
+    for ly in 0..CHUNK_SIZE {
+        for lx in 0..CHUNK_SIZE {
+            let t = TilePosition::new(first.x + lx, first.y + ly);
+            let Some(tile) = surface.tile(t) else { continue };
             let around = [(0, -1), (1, 0), (0, 1), (-1, 0), (1, -1), (1, 1), (-1, 1), (-1, -1)]
-                .map(|(dx, dy)| sim.0.surface.tile(TilePosition::new(t.x + dx, t.y + dy)));
+                .map(|(dx, dy)| surface.tile(TilePosition::new(t.x + dx, t.y + dy)));
             let layer = db.tile(tile).layer;
             let water = db.tile(tile).fluid.is_some();
             // Water tiles share a layer; the later one blends softly over the earlier.
@@ -408,245 +411,232 @@ fn compose_step(terrain: &mut Terrain, sim: &Sim, data: &Data, job: &mut Job) ->
             higher.sort_by_key(|n| (db.tile(*n).layer, *n));
             higher.dedup();
             for over in higher {
-                // Shores are drawn in a second pass with their own pictures.
-                if terrain.shores(data, sim, over, px).iter().any(|s| s.to_tiles.contains(&tile)) {
-                    continue;
-                }
                 let edges = [0, 1, 2, 3].map(|i| around[i] == Some(over));
                 let corners = [4, 5, 6, 7].map(|i| around[i] == Some(over));
-                let piece = hash(7, 2 + over.0 as u32, t.x, t.y);
-                let both_water = db.tile(tile).fluid.is_some() && db.tile(over).fluid.is_some();
-                let mask = if both_water {
-                    soft_mask(edges, corners, px)
-                } else {
-                    terrain.masks(data, sim, over, px).and_then(|m| transition_mask(m, edges, corners, piece, px))
-                };
-                let Some(mask) = mask else {
-                    continue;
-                };
-                let top = terrain.tile_pixels(data, sim, over, t, px);
-                for (i, m) in mask.iter().enumerate() {
-                    let a = *m as u32;
-                    for ch in 0..3 {
-                        let (b, o) = (cell[i * 4 + ch] as u32, top[i * 4 + ch] as u32);
-                        cell[i * 4 + ch] = ((b * (255 - a) + o * a) / 255) as u8;
-                    }
-                }
-            }
-            for py in 0..px {
-                let src = (py * px * 4) as usize;
-                let dst = (((ty as u32 * px + py) * size + tx as u32 * px) * 4) as usize;
-                pixels[dst..dst + (px * 4) as usize].copy_from_slice(&cell[src..src + (px * 4) as usize]);
-            }
-        }
-    }
-    // Shores: land drawn into neighbouring water through the mask, then the bank on top.
-    // Banks reach a tile down, so the row above the chunk is included.
-    if (SHORE_STEP..DECORATIVE_STEP).contains(&step) {
-        let ty = step - SHORE_STEP - 1;
-        for tx in 0..CHUNK_SIZE {
-            let t = TilePosition::new(first.x + tx, first.y + ty);
-            let Some(tile) = sim.0.surface.tile(t) else { continue };
-            let around = [(0, -1), (1, 0), (0, 1), (-1, 0), (1, -1), (1, 1), (-1, 1), (-1, -1)]
-                .map(|(dx, dy)| sim.0.surface.tile(TilePosition::new(t.x + dx, t.y + dy)));
-            let layer = db.tile(tile).layer;
-            let mut lands: Vec<TileId> =
-                around.iter().flatten().copied().filter(|n| db.tile(*n).layer > layer).collect();
-            lands.sort_by_key(|n| (db.tile(*n).layer, *n));
-            lands.dedup();
-            for land in lands {
-                let edges = [0, 1, 2, 3].map(|i| around[i] == Some(land));
-                let corners = [4, 5, 6, 7].map(|i| around[i] == Some(land));
-                let pick = hash(7, 40 + land.0 as u32, t.x, t.y) as usize;
                 let pieces = pick_pieces(edges, corners);
-                let mut chosen: Vec<(ShorePiece, u32)> = Vec::new();
-                {
-                    let Some(set) = terrain.shores(data, sim, land, px).iter().find(|s| s.to_tiles.contains(&tile))
-                    else {
-                        continue;
-                    };
-                    for (kind, rot) in &pieces {
-                        if let Some((_, h, variants)) = set.pieces.iter().find(|p| p.0 == *kind)
-                            && !variants.is_empty()
-                        {
-                            chosen.push((variants[pick % variants.len()][*rot].clone(), *h));
-                        }
-                    }
+                if pieces.is_empty() {
+                    continue;
                 }
-                let land_px = if ty >= 0 { Some(terrain.tile_pixels(data, sim, land, t, px)) } else { None };
-                let blend = |pixels: &mut Vec<u8>, src: &[u8], w: u32, h: u32, x0: i32, y0: i32| {
-                    for y in 0..h {
-                        let dy = y0 + y as i32;
-                        if dy < 0 || dy >= size as i32 {
+                let pick = hash(7, 2 + over.0 as u32, t.x, t.y) as u32;
+                // The higher tile's own 1x1 picture, sampled through the mask.
+                let Some((cpath, crects)) = terrain.blocks(data, sim, over, 1) else { continue };
+                let Some(csheet) = terrain.sheet(images, &cpath, false) else { continue };
+                if crects.is_empty() {
+                    continue;
+                }
+                let color_uv = uv_rect(crects[hash(7, 1, t.x, t.y) as usize % crects.len()], csheet.size);
+                let over_name = db.tile(over).name.clone();
+                // Shores: the land's own transition to this (water) tile.
+                let shores = terrain
+                    .shores
+                    .entry(over)
+                    .or_insert_with(|| factorio_data::sprite::tile_shores(&data.0, &over_name))
+                    .clone();
+                if let Some(shore) = shores.iter().find(|s| s.to_tiles.iter().any(|n| *n == db.tile(tile).name)) {
+                    let Some(sheet) = terrain.sheet(images, &shore.sheet, false) else { continue };
+                    let Some(mask_sheet) = terrain.sheet(images, &shore.sheet, true) else { continue };
+                    let sz = shore.size as f32;
+                    for (kind, rot) in &pieces {
+                        let p = match kind {
+                            Piece::Inner => shore.inner_corner,
+                            Piece::Outer => shore.outer_corner,
+                            Piece::Side => shore.side,
+                            Piece::U => shore.u_transition,
+                            Piece::O => shore.o_transition,
+                        };
+                        if p.count == 0 {
                             continue;
                         }
-                        for x in 0..w {
-                            let dx = x0 + x as i32;
-                            let s = ((y * w + x) * 4) as usize;
-                            let a = src[s + 3] as u32;
-                            if a == 0 {
-                                continue;
-                            }
-                            let d = ((dy as u32 * size + dx as u32) * 4) as usize;
-                            for ch in 0..3 {
-                                pixels[d + ch] =
-                                    ((pixels[d + ch] as u32 * (255 - a) + src[s + ch] as u32 * a) / 255) as u8;
-                            }
+                        let v = (pick % p.count) as f32;
+                        let h = p.tile_height.max(1) as f32;
+                        let rot = if *kind == Piece::O { 0.0 } else { *rot as f32 };
+                        let tall = |x0: u32| {
+                            Rect::new(
+                                x0 as f32 + v * sz,
+                                p.y as f32 + rot * sz * h,
+                                x0 as f32 + (v + 1.0) * sz,
+                                p.y as f32 + (rot + 1.0) * sz * h,
+                            )
+                        };
+                        if let Some(bx) = shore.background_x {
+                            parts.plain.entry((ORDER_SHORE_BACKGROUND, sheet.image.clone())).or_default().add(
+                                t.x as f32,
+                                t.y as f32,
+                                1.0,
+                                h,
+                                uv_rect(tall(bx), sheet.size),
+                                None,
+                            );
+                        }
+                        let mask = Rect::new(
+                            shore.mask_x as f32 + v * sz,
+                            p.y as f32 + rot * sz,
+                            shore.mask_x as f32 + (v + 1.0) * sz,
+                            p.y as f32 + (rot + 1.0) * sz,
+                        );
+                        parts
+                            .masked
+                            .entry((ORDER_SHORE_MASK, csheet.image.clone(), mask_sheet.image.clone()))
+                            .or_default()
+                            .add(t.x as f32, t.y as f32, 1.0, 1.0, color_uv, Some(uv_rect(mask, mask_sheet.size)));
+                        parts.plain.entry((ORDER_SHORE_OVERLAY, sheet.image.clone())).or_default().add(
+                            t.x as f32,
+                            t.y as f32,
+                            1.0,
+                            h,
+                            uv_rect(tall(shore.overlay_x), sheet.size),
+                            None,
+                        );
+                    }
+                    continue;
+                }
+                let order = ORDER_TRANSITION + db.tile(over).layer.clamp(0, 999);
+                if water && db.tile(over).fluid.is_some() {
+                    // Water into deep water: soft sides and corners.
+                    let soft = terrain.soft(images);
+                    for (i, e) in edges.iter().enumerate() {
+                        if *e {
+                            let m = Rect::new(0.0, i as f32 * 64.0, 64.0, (i + 1) as f32 * 64.0);
+                            parts.masked.entry((order, csheet.image.clone(), soft.image.clone())).or_default().add(
+                                t.x as f32,
+                                t.y as f32,
+                                1.0,
+                                1.0,
+                                color_uv,
+                                Some(uv_rect(m, soft.size)),
+                            );
                         }
                     }
-                };
-                let (x0, y0) = (tx * px as i32, ty * px as i32);
-                for (piece, h) in &chosen {
-                    if let Some(bg) = &piece.background {
-                        blend(pixels, bg, px, px * h, x0, y0);
-                    }
-                }
-                if let Some(land_px) = &land_px {
-                    for (piece, _) in &chosen {
-                        for y in 0..px {
-                            for x in 0..px {
-                                let a = piece.mask[(y * px + x) as usize] as u32;
-                                if a == 0 {
-                                    continue;
-                                }
-                                let s = ((y * px + x) * 4) as usize;
-                                let d = (((y0 as u32 + y) * size + x0 as u32 + x) * 4) as usize;
-                                for ch in 0..3 {
-                                    pixels[d + ch] =
-                                        ((pixels[d + ch] as u32 * (255 - a) + land_px[s + ch] as u32 * a) / 255) as u8;
-                                }
-                            }
+                    for (i, k) in corners.iter().enumerate() {
+                        if *k && !edges[i] && !edges[(i + 1) % 4] {
+                            let m = Rect::new(64.0, i as f32 * 64.0, 128.0, (i + 1) as f32 * 64.0);
+                            parts.masked.entry((order, csheet.image.clone(), soft.image.clone())).or_default().add(
+                                t.x as f32,
+                                t.y as f32,
+                                1.0,
+                                1.0,
+                                color_uv,
+                                Some(uv_rect(m, soft.size)),
+                            );
                         }
                     }
+                    continue;
                 }
-                for (piece, h) in &chosen {
-                    blend(pixels, &piece.overlay, px, px * h, x0, y0);
+                let tr = terrain
+                    .transitions
+                    .entry(over)
+                    .or_insert_with(|| factorio_data::sprite::tile_transition(&data.0, &over_name))
+                    .clone();
+                let Some(tr) = tr else { continue };
+                let Some(mask_sheet) = terrain.sheet(images, &tr.sheet, true) else { continue };
+                let sz = tr.size as f32;
+                for (kind, rot) in pieces {
+                    let p = match kind {
+                        Piece::Inner => tr.inner_corner,
+                        Piece::Outer => tr.outer_corner,
+                        Piece::Side => tr.side,
+                        Piece::U => tr.u_transition,
+                        Piece::O => tr.o_transition,
+                    };
+                    if p.count == 0 {
+                        continue;
+                    }
+                    let v = (pick % p.count) as f32;
+                    let rot = if kind == Piece::O { 0.0 } else { rot as f32 };
+                    let m = Rect::new(
+                        p.x as f32 + v * sz,
+                        tr.y as f32 + rot * sz,
+                        p.x as f32 + (v + 1.0) * sz,
+                        tr.y as f32 + (rot + 1.0) * sz,
+                    );
+                    parts.masked.entry((order, csheet.image.clone(), mask_sheet.image.clone())).or_default().add(
+                        t.x as f32,
+                        t.y as f32,
+                        1.0,
+                        1.0,
+                        color_uv,
+                        Some(uv_rect(m, mask_sheet.size)),
+                    );
                 }
             }
         }
     }
-
-    if step < DECORATIVE_STEP {
-        return false;
-    }
-    // Decoratives are painted onto the ground, including the parts of neighbouring
-    // chunks' decoratives that reach over the edge.
-    let names: Vec<String> = sim
-        .0
-        .surface
+    // Decoratives.
+    let names: Vec<String> = surface
         .settings
         .noise
         .as_ref()
         .map(|n| n.decoratives.iter().map(|d| d.name.clone()).collect())
         .unwrap_or_default();
-    let mut nearby = Vec::new();
-    for dy in -1..=1 {
-        for dx in -1..=1 {
-            let n = ChunkPosition { x: c.x + dx, y: c.y + dy };
-            nearby.extend(terrain.placed.entry(n).or_insert_with(|| sim.0.surface.decoratives(n)).iter().copied());
-        }
-    }
-    for d in nearby {
+    for d in surface.decoratives(c) {
         let Some(name) = names.get(d.decorative as usize) else { continue };
-        let t = &mut *terrain;
-        let files = &mut t.files;
-        let pic = t.levels.entry(px).or_default().decoratives.entry((d.decorative, d.variation)).or_insert_with(|| {
-            let s = factorio_data::sprite::decorative_sprite(&data.0, name, d.variation as usize)?;
-            let img = load_file(files, &s.path)?;
-            if s.x + s.width > img.width() || s.y + s.height > img.height() {
-                return None;
-            }
-            let k = s.scale as f32 * px as f32 / 32.0;
-            let (w, h) = (((s.width as f32 * k).round() as u32).max(1), ((s.height as f32 * k).round() as u32).max(1));
-            let crop = image::imageops::crop_imm(img, s.x, s.y, s.width, s.height).to_image();
-            let small = image::imageops::resize(&crop, w, h, image::imageops::FilterType::CatmullRom);
-            let ox = (s.shift.0 as f32 * px as f32) as i32 - w as i32 / 2;
-            let oy = (s.shift.1 as f32 * px as f32) as i32 - h as i32 / 2;
-            Some((small, ox, oy))
-        });
-        let Some((pic, ox, oy)) = pic else { continue };
-        let x0 = (d.x - first.x * 256) * px as i32 / 256 + *ox;
-        let y0 = (d.y - first.y * 256) * px as i32 / 256 + *oy;
-        for (x, y, p) in pic.enumerate_pixels() {
-            let (dx, dy) = (x0 + x as i32, y0 + y as i32);
-            if dx < 0 || dy < 0 || dx >= size as i32 || dy >= size as i32 || p[3] == 0 {
-                continue;
-            }
-            let i = ((dy as u32 * size + dx as u32) * 4) as usize;
-            let a = p[3] as u32;
-            for ch in 0..3 {
-                pixels[i + ch] = ((pixels[i + ch] as u32 * (255 - a) + p[ch] as u32 * a) / 255) as u8;
-            }
-        }
+        let s = terrain
+            .decorative_sprites
+            .entry((d.decorative, d.variation))
+            .or_insert_with(|| factorio_data::sprite::decorative_sprite(&data.0, name, d.variation as usize))
+            .clone();
+        let Some(s) = s else { continue };
+        let Some(sheet) = terrain.sheet(images, &s.path, false) else { continue };
+        let (w, h) = (s.width as f32 * s.scale as f32 / 32.0, s.height as f32 * s.scale as f32 / 32.0);
+        let (cx, cy) = (d.x as f32 / 256.0 + s.shift.0 as f32, d.y as f32 / 256.0 + s.shift.1 as f32);
+        let r = Rect::new(s.x as f32, s.y as f32, (s.x + s.width) as f32, (s.y + s.height) as f32);
+        parts.plain.entry((ORDER_DECORATIVE, sheet.image.clone())).or_default().add(
+            cx - w / 2.0,
+            cy - h / 2.0,
+            w,
+            h,
+            uv_rect(r, sheet.size),
+            None,
+        );
     }
-    true
+    parts
 }
 
-/// The texture's mip levels (box-filtered, in sRGB as the game's are) concatenated, and
-/// how many there are.
-fn mip_chain(level0: Vec<u8>, size: u32) -> (Vec<u8>, u32) {
-    let mut data = level0.clone();
-    let mut prev = level0;
-    let mut s = size;
-    let mut levels = 1;
-    while s > 1 {
-        let n = s / 2;
-        let mut next = vec![0u8; (n * n * 4) as usize];
-        for y in 0..n {
-            for x in 0..n {
-                for ch in 0..4 {
-                    let at = |xx: u32, yy: u32| prev[((yy * s + xx) * 4 + ch) as usize] as u32;
-                    let sum = at(2 * x, 2 * y) + at(2 * x + 1, 2 * y) + at(2 * x, 2 * y + 1) + at(2 * x + 1, 2 * y + 1);
-                    next[((y * n + x) * 4 + ch) as usize] = ((sum + 2) / 4) as u8;
-                }
-            }
-        }
-        data.extend_from_slice(&next);
-        prev = next;
-        s = n;
-        levels += 1;
-    }
-    (data, levels)
+/// Finished chunks are merged into meshes covering `REGION`×`REGION` chunks, so the
+/// ground takes a few draws per sheet rather than one per chunk.
+const REGION: i32 = 8;
+
+fn region_of(c: ChunkPosition) -> (i32, i32) {
+    (c.x.div_euclid(REGION), c.y.div_euclid(REGION))
 }
 
-fn chunk_sprite(
+fn region_chunks(r: (i32, i32)) -> impl Iterator<Item = ChunkPosition> {
+    (0..REGION)
+        .flat_map(move |dy| (0..REGION).map(move |dx| ChunkPosition { x: r.0 * REGION + dx, y: r.1 * REGION + dy }))
+}
+
+/// Frames without a new chunk before a region's meshes are merged again.
+const MERGE_DELAY_FRAMES: u32 = 30;
+
+#[derive(Default)]
+struct Region {
+    ground: Vec<Entity>,
+    /// The frame a chunk of the region was last built.
+    touched: u32,
+}
+
+/// Spawns the meshes of some ground parts.
+fn spawn_parts(
     commands: &mut Commands,
+    terrain: &mut Terrain,
     images: &mut Assets<Image>,
-    c: ChunkPosition,
-    pixels: Vec<u8>,
-    px: u32,
-    z: f32,
-) -> (Entity, Handle<Image>) {
-    let size = CHUNK_SIZE as u32 * px;
-    let mut image = Image::new(
-        Extent3d { width: size, height: size, depth_or_array_layers: 1 },
-        TextureDimension::D2,
-        pixels.clone(),
-        TextureFormat::Rgba8UnormSrgb,
-        RenderAssetUsages::RENDER_WORLD,
-    );
-    // A full mip chain sampled trilinearly, as the game does, so the ground looks the same
-    // at any zoom whichever texture detail is loaded.
-    let (data, levels) = mip_chain(pixels, size);
-    image.data = Some(data);
-    image.texture_descriptor.mip_level_count = levels;
-    image.sampler = bevy::image::ImageSampler::Descriptor(bevy::image::ImageSamplerDescriptor {
-        mag_filter: bevy::image::ImageFilterMode::Linear,
-        min_filter: bevy::image::ImageFilterMode::Linear,
-        mipmap_filter: bevy::image::ImageFilterMode::Linear,
-        ..bevy::image::ImageSamplerDescriptor::linear()
-    });
-    let handle = images.add(image);
-    let first = c.first_tile();
-    let world = crate::map_to_world(MapPosition::from_tiles(first.x, first.y))
-        + Vec2::new(1.0, -1.0) * (CHUNK_SIZE as f32 * TILE / 2.0);
-    let e = commands
-        .spawn((
-            Sprite { image: handle.clone(), custom_size: Some(Vec2::splat(CHUNK_SIZE as f32 * TILE)), ..default() },
-            Transform::from_xyz(world.x, world.y, z),
-        ))
-        .id();
-    (e, handle)
+    meshes: &mut Assets<Mesh>,
+    masked: &mut Assets<MaskedTile>,
+    parts: Parts,
+) -> Vec<Entity> {
+    let white = terrain.white(images);
+    let plain = parts.plain.into_iter().map(|((order, image), q)| ((order, image, white.clone()), q));
+    let mut out = Vec::new();
+    for ((order, color, mask), quads) in plain.chain(parts.masked) {
+        let material = terrain.masked_material(masked, &color, &mask);
+        let z = -100.0 + order as f32 * 0.001;
+        out.push(
+            commands
+                .spawn((Mesh2d(meshes.add(quads.mesh())), MeshMaterial2d(material), Transform::from_xyz(0.0, 0.0, z)))
+                .id(),
+        );
+    }
+    out
 }
 
 fn build_chunks(
@@ -656,119 +646,90 @@ fn build_chunks(
     mut terrain: ResMut<Terrain>,
     mut ready: ResMut<GroundReady>,
     mut images: ResMut<Assets<Image>>,
-    camera: Single<(&Transform, &Projection), With<Camera2d>>,
-    window: Single<&Window, With<PrimaryWindow>>,
-    mut visibility: Query<&mut Visibility>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut masked: ResMut<Assets<MaskedTile>>,
+    camera: Single<&Transform, With<Camera2d>>,
 ) {
-    let started = std::time::Instant::now();
-    let (ct, proj) = *camera;
-    let scale = match proj {
-        Projection::Orthographic(o) => o.scale,
-        _ => 1.0,
-    };
-    // Texture detail (pixels per tile) for the screen pixels a tile covers, rounded up to
-    // the next level so textures are only ever shrunk (by their mipmaps), never enlarged.
-    let screen_px = TILE / scale * window.scale_factor();
-    let needed = [LO, 16, MID, HI].into_iter().find(|px| *px as f32 >= screen_px).unwrap_or(HI);
-    let current = terrain.display_px.max(LO);
-    // Finer detail is wanted at once; coarser only once comfortably zoomed out past it.
-    let want = if needed > current || (needed < current && screen_px * 1.3 <= (current / 2) as f32) {
-        needed
-    } else {
-        current
-    };
-    let half = window.size() / 2.0 * scale;
-    let centre = ct.translation.truncate();
-    let chunk_world = CHUNK_SIZE as f32 * TILE;
-    // Chunks in view, plus one around it.
-    let lt = crate::world_to_map(Vec2::new(centre.x - half.x, centre.y + half.y)).tile().chunk();
-    let rb = crate::world_to_map(Vec2::new(centre.x + half.x, centre.y - half.y)).tile().chunk();
+    let centre = camera.translation.truncate();
+    let at = crate::world_to_map(centre).tile().chunk();
     let surface = &sim.0.surface;
-    let mut wanted: Vec<(f32, ChunkPosition)> = Vec::new();
-    for y in lt.y - 1..=rb.y + 1 {
-        for x in lt.x - 1..=rb.x + 1 {
-            let c = ChunkPosition { x, y };
-            // Drawn once its neighbours exist, so its edges blend into them.
-            let neighbours =
-                (-1..=1).all(|dy| (-1..=1).all(|dx| surface.is_generated(ChunkPosition { x: x + dx, y: y + dy })));
-            if !neighbours {
+    let t = &mut *terrain;
+    t.ground_frame += 1;
+    // Generated chunks near the camera whose neighbours exist (so edges can blend).
+    let mut todo: Vec<(i32, ChunkPosition)> = surface
+        .chunks()
+        .map(|(p, _)| p)
+        .filter(|p| !t.chunks.get(p).is_some_and(|v| v.built))
+        .filter(|p| (p.x - at.x).abs() <= KEEP_CHUNKS && (p.y - at.y).abs() <= KEEP_CHUNKS)
+        .filter(|p| {
+            (-1..=1).all(|dy| (-1..=1).all(|dx| surface.is_generated(ChunkPosition { x: p.x + dx, y: p.y + dy })))
+        })
+        .map(|p| ((p.x - at.x).abs().max((p.y - at.y).abs()), p))
+        .collect();
+    todo.sort();
+    for (_, c) in todo.into_iter().take(BUILD_PER_FRAME) {
+        let parts = build_parts(t, &sim, &data, &mut images, c);
+        // Drawn on its own until its region is merged again.
+        let ground = spawn_parts(&mut commands, t, &mut images, &mut meshes, &mut masked, parts.clone());
+        let view = t.chunks.entry(c).or_default();
+        view.built = true;
+        view.parts = Some(parts);
+        view.ground = ground;
+        t.regions.entry(region_of(c)).or_default().touched = t.ground_frame;
+        ready.0.insert(c);
+    }
+    // Regions whose chunks stopped changing are merged into one set of meshes.
+    let settled: Vec<(i32, i32)> = t
+        .regions
+        .iter()
+        .filter(|(r, g)| {
+            t.ground_frame > g.touched + MERGE_DELAY_FRAMES
+                && region_chunks(**r).any(|c| t.chunks.get(&c).is_some_and(|v| !v.ground.is_empty()))
+        })
+        .map(|(r, _)| *r)
+        .collect();
+    for r in settled {
+        let mut merged = Parts::default();
+        let mut full = true;
+        for c in region_chunks(r) {
+            let Some(v) = t.chunks.get_mut(&c).filter(|v| v.built) else {
+                full = false;
                 continue;
-            }
-            let mid = crate::map_to_world(MapPosition::from_tiles(
-                c.x * CHUNK_SIZE + CHUNK_SIZE / 2,
-                c.y * CHUNK_SIZE + CHUNK_SIZE / 2,
-            ));
-            wanted.push((mid.distance(centre) / chunk_world, c));
-        }
-    }
-    wanted.sort_by(|a, b| a.0.total_cmp(&b.0));
-    let in_view: HashSet<ChunkPosition> = wanted.iter().map(|w| w.1).collect();
-
-    // Work on composing textures: small ones first everywhere (they fill the view fast),
-    // then the needed detail nearest first, a row at a time within the frame budget.
-    while started.elapsed().as_secs_f64() * 1000.0 < BUDGET_MS {
-        if terrain.job.is_none() {
-            let next = wanted
-                .iter()
-                .find(|(_, c)| !terrain.chunks.get(c).is_some_and(|v| v.levels.contains_key(&LO)))
-                .map(|(_, c)| (*c, LO))
-                .or_else(|| {
-                    wanted
-                        .iter()
-                        .find(|(_, c)| !terrain.chunks.get(c).is_some_and(|v| v.levels.contains_key(&want)))
-                        .map(|(_, c)| (*c, want))
-                });
-            match next {
-                Some((c, px)) => terrain.job = Some(Job::new(c, px)),
-                None => break,
-            }
-        }
-        let mut job = terrain.job.take().unwrap();
-        if !in_view.contains(&job.c) {
-            continue;
-        }
-        if compose_step(&mut terrain, &sim, &data, &mut job) {
-            let z = -100.0 - (job.px == LO) as i32 as f32;
-            let sprite = chunk_sprite(&mut commands, &mut images, job.c, std::mem::take(&mut job.pixels), job.px, z);
-            terrain.chunks.entry(job.c).or_default().levels.insert(job.px, sprite);
-            ready.0.insert(job.c);
-        } else {
-            terrain.job = Some(job);
-        }
-    }
-
-    // The whole view switches detail together, once every visible chunk has it.
-    if want != terrain.display_px
-        && wanted.iter().all(|(_, c)| terrain.chunks.get(c).is_some_and(|v| v.levels.contains_key(&want)))
-    {
-        terrain.display_px = want;
-    }
-    let display = terrain.display_px.max(LO);
-
-    // Keep the small textures; drop detail the view no longer needs.
-    for (c, view) in terrain.chunks.iter_mut() {
-        let drop: Vec<u32> = view
-            .levels
-            .keys()
-            .copied()
-            .filter(|px| *px != LO && ((*px != want && *px != display) || !in_view.contains(c)))
-            .collect();
-        for px in drop {
-            if let Some((e, h)) = view.levels.remove(&px) {
+            };
+            for e in v.ground.drain(..) {
                 commands.entity(e).despawn();
-                images.remove(&h);
+            }
+            if let Some(p) = &v.parts {
+                merged.append(p.clone());
             }
         }
-        // Show the view's detail; a chunk that does not have it yet shows the closest it has.
-        let shown = if view.levels.contains_key(&display) {
-            display
-        } else {
-            view.levels.keys().copied().min_by_key(|px| px.abs_diff(display)).unwrap_or(LO)
-        };
-        for (px, (e, _)) in &view.levels {
-            if let Ok(mut v) = visibility.get_mut(*e) {
-                *v = if *px == shown { Visibility::Inherited } else { Visibility::Hidden };
+        // A full region never changes again, so its chunks' quads are not needed.
+        if full {
+            for c in region_chunks(r) {
+                t.chunks.get_mut(&c).unwrap().parts = None;
             }
+        }
+        let ground = spawn_parts(&mut commands, t, &mut images, &mut meshes, &mut masked, merged);
+        for e in std::mem::replace(&mut t.regions.get_mut(&r).unwrap().ground, ground) {
+            commands.entity(e).despawn();
+        }
+    }
+    // Far regions drop their meshes.
+    let far = |c: ChunkPosition| (c.x - at.x).abs() > KEEP_CHUNKS + REGION || (c.y - at.y).abs() > KEEP_CHUNKS + REGION;
+    let far_regions: Vec<(i32, i32)> = t.regions.keys().copied().filter(|r| region_chunks(*r).all(far)).collect();
+    for r in far_regions {
+        for e in t.regions.remove(&r).unwrap().ground {
+            commands.entity(e).despawn();
+        }
+        for c in region_chunks(r) {
+            if let Some(v) = t.chunks.get_mut(&c) {
+                for e in v.ground.drain(..) {
+                    commands.entity(e).despawn();
+                }
+                v.built = false;
+                v.parts = None;
+            }
+            ready.0.remove(&c);
         }
     }
 }

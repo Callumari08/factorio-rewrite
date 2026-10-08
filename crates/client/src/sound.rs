@@ -321,6 +321,11 @@ fn working_sounds(
     let mut hands: HashMap<EntityId, bool> = HashMap::new();
     for id in ids {
         let Some(e) = sim.0.entity(id) else { continue };
+        // Most entities in range (trees, rocks) make no working sound.
+        let inserter = matches!(e.state, EntityState::Inserter(_));
+        if !inserter && !working(&e.state) {
+            continue;
+        }
         let d = data.0.clone();
         let name = db.entity(e.proto).name.clone();
         let Some(ws) =

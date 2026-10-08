@@ -388,7 +388,16 @@ impl Simulation {
 
     /// Entities whose footprint touches the area.
     pub fn entities_in(&self, area: Area) -> Vec<EntityId> {
-        let mut out: Vec<EntityId> = area.tiles().filter_map(|t| self.tile_index.get(&t).copied()).collect();
+        // The index is ordered by x then y: one range per column of the area.
+        let lt = area.left_top.tile();
+        let rb = MapPosition::new(area.right_bottom.x - 1, area.right_bottom.y - 1).tile();
+        let mut out: Vec<EntityId> = Vec::new();
+        if lt.x <= rb.x && lt.y <= rb.y {
+            for x in lt.x..=rb.x {
+                let column = TilePosition { x, y: lt.y }..=TilePosition { x, y: rb.y };
+                out.extend(self.tile_index.range(column).map(|(_, id)| *id));
+            }
+        }
         out.sort();
         out.dedup();
         out
