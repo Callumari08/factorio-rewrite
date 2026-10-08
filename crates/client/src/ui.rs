@@ -38,6 +38,7 @@ impl Plugin for UiPlugin {
                     queue,
                     window,
                     live_bars,
+                    hide_hud,
                     research::scroll,
                     research::window,
                     research::hud,
@@ -1012,6 +1013,19 @@ fn quickbar(
 /// The hovered button's `Debug` text (see [`Ctx::hovered`]).
 fn hovered_button(q: &Query<(&Interaction, &UiButton)>) -> Option<String> {
     q.iter().find(|(i, _)| **i != Interaction::None).map(|(_, b)| format!("{b:?}"))
+}
+
+/// The technology screen covers the HUD, as in the game.
+fn hide_hud(
+    ui: Res<UiState>,
+    mut q: Query<&mut Node, Or<(With<QuickbarRoot>, With<QueueRoot>, With<research::ResearchHudRoot>)>>,
+) {
+    for mut n in &mut q {
+        let d = if ui.tech_open { Display::None } else { Display::Flex };
+        if n.display != d {
+            n.display = d;
+        }
+    }
 }
 
 fn hover_highlight(mut q: Query<(&Interaction, &Base, &mut BackgroundColor), Changed<Interaction>>) {
