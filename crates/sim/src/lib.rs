@@ -25,6 +25,7 @@ pub mod noise;
 pub mod player;
 pub mod power;
 pub mod proto;
+pub mod research;
 pub mod rng;
 pub mod surface;
 pub mod world;

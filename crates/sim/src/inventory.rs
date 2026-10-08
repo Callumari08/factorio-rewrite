@@ -27,6 +27,13 @@ impl Inventory {
         Inventory { slots: vec![None; size as usize] }
     }
 
+    /// Adds empty slots up to `size` (never removes slots).
+    pub fn grow_to(&mut self, size: u32) {
+        if self.slots.len() < size as usize {
+            self.slots.resize(size as usize, None);
+        }
+    }
+
     pub fn len(&self) -> usize {
         self.slots.len()
     }

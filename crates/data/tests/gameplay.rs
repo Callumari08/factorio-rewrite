@@ -788,6 +788,11 @@ mod cursor {
         input(&mut sim, InputAction::PickItem(picked));
         click(&mut sim, SlotRef::Opened(EntityInventory::Fuel, 0), MouseButton::Left, false, false);
         assert_eq!(cursor(&sim), Some(("iron-plate".into(), 10)));
+        // Steel is locked until steel processing is researched, so the plates stay.
+        click(&mut sim, SlotRef::Opened(EntityInventory::Input, 0), MouseButton::Left, false, false);
+        assert_eq!(cursor(&sim), Some(("iron-plate".into(), 10)));
+        let steel = sim.prototypes().technology_id("steel-processing").unwrap();
+        sim.finish_research(steel);
         click(&mut sim, SlotRef::Opened(EntityInventory::Input, 0), MouseButton::Left, false, false);
         assert_eq!(cursor(&sim), None);
         // The fuelled furnace starts on steel (5 plates) straight away.
@@ -872,4 +877,243 @@ fn cheat_mode_crafts_instantly_and_free() {
         sim.player(0).unwrap().character.as_ref().unwrap().inventory.slots().iter().filter(|s| s.is_some()).count();
     // One extra slot: the 3 crafted assemblers plus a full stack of them.
     assert_eq!(carried + in_chests, total_items + 1);
+}
+
+mod research {
+    use super::*;
+    use factorio_sim::proto::TechId;
+
+    fn tech(sim: &Simulation, name: &str) -> TechId {
+        sim.prototypes().technology_id(name).unwrap_or_else(|| panic!("no technology {name}"))
+    }
+
+    fn enabled(sim: &Simulation, recipe: &str) -> bool {
+        sim.research().recipe_enabled(sim.prototypes().recipe_id(recipe).unwrap())
+    }
+
+    /// Finishes every technology that is researched by a trigger, and their prerequisites.
+    fn research_triggers(sim: &mut Simulation) {
+        loop {
+            let db = sim.prototypes_arc();
+            let next = db
+                .technology_ids()
+                .find(|t| db.technology(*t).trigger.is_some() && sim.research().is_available(&db, *t));
+            match next {
+                Some(t) => sim.finish_research(t),
+                None => break,
+            }
+        }
+    }
+
+    fn researched(sim: &Simulation, name: &str) -> bool {
+        sim.research().is_researched(tech(sim, name))
+    }
+
+    /// A lab next to a pole on steam power, filled with automation science packs.
+    fn powered_labs(sim: &mut Simulation, labs: i32, packs: u32) -> Vec<EntityId> {
+        steam_power(sim, 1);
+        place(sim, "small-electric-pole", 0, 1, Direction::NORTH);
+        let ids: Vec<EntityId> = (0..labs).map(|i| place(sim, "lab", 1 + 3 * i, 1, Direction::NORTH)).collect();
+        for (i, lab) in ids.iter().enumerate() {
+            if i > 0 {
+                place(sim, "small-electric-pole", 3 * i as i32, 4, Direction::NORTH);
+            }
+            insert(sim, *lab, "automation-science-pack", packs);
+        }
+        ids
+    }
+
+    #[test]
+    fn freeplay_starts_with_the_games_unlocked_recipes() {
+        let d = game!();
+        let sim = flat_world(d);
+        let db = sim.prototypes();
+        let mut unlocked: Vec<&str> = db
+            .recipe_ids()
+            .filter(|r| sim.research().recipe_enabled(*r) && !db.recipe(*r).hidden)
+            .map(|r| db.recipe(r).name.as_str())
+            .collect();
+        unlocked.sort();
+        assert_eq!(
+            unlocked,
+            [
+                "burner-inserter",
+                "burner-mining-drill",
+                "copper-plate",
+                "firearm-magazine",
+                "iron-chest",
+                "iron-gear-wheel",
+                "iron-plate",
+                "light-armor",
+                "stone-brick",
+                "stone-furnace",
+                "transport-belt",
+                "wooden-chest",
+            ]
+        );
+    }
+
+    #[test]
+    fn locked_recipes_cannot_be_crafted_or_used() {
+        let d = game!();
+        let mut sim = flat_world(d);
+        give(&mut sim, "copper-plate", 10);
+        let cable = sim.prototypes().recipe_id("copper-cable").unwrap();
+        input(&mut sim, InputAction::Craft { recipe: cable, count: 1 });
+        assert!(sim.player(0).unwrap().character.as_ref().unwrap().queue.is_empty());
+        // Unlocking it (electronics) makes it craftable.
+        let electronics = tech(&sim, "electronics");
+        sim.finish_research(electronics);
+        assert!(enabled(&sim, "copper-cable"));
+        input(&mut sim, InputAction::Craft { recipe: cable, count: 1 });
+        assert_eq!(sim.player(0).unwrap().character.as_ref().unwrap().queue.len(), 1);
+    }
+
+    #[test]
+    fn steam_power_is_researched_by_smelting_50_iron_plates() {
+        let d = game!();
+        let mut sim = flat_world(d);
+        assert!(!enabled(&sim, "offshore-pump"));
+        let furnace = place(&mut sim, "stone-furnace", 2, 0, Direction::NORTH);
+        insert(&mut sim, furnace, "coal", 20);
+        insert(&mut sim, furnace, "iron-ore", 50);
+        // Stone furnace: 3.2 s at crafting speed 1 = 192 ticks per plate.
+        let t = ticks_until(&mut sim, 20_000, |s| researched(s, "steam-power"));
+        let plates = container_count(&sim, furnace, "iron-plate");
+        assert_eq!(plates, 50);
+        assert_eq!(t, 50 * 192);
+        for r in ["offshore-pump", "boiler", "steam-engine", "pipe"] {
+            assert!(enabled(&sim, r), "{r} not unlocked");
+        }
+    }
+
+    #[test]
+    fn trigger_progress_only_counts_once_available() {
+        let d = game!();
+        let mut sim = flat_world(d);
+        // automation-science-pack needs a crafted lab, after electronics and steam power.
+        let lab = sim.prototypes().item_id("lab").unwrap();
+        sim.research_trigger(factorio_sim::research::TriggerEvent::Crafted(lab, 1));
+        assert!(!researched(&sim, "automation-science-pack"));
+        for t in ["electronics", "steam-power"] {
+            let t = tech(&sim, t);
+            sim.finish_research(t);
+        }
+        sim.research_trigger(factorio_sim::research::TriggerEvent::Crafted(lab, 1));
+        assert!(researched(&sim, "automation-science-pack"));
+    }
+
+    #[test]
+    fn one_lab_researches_automation_in_100_seconds() {
+        let d = game!();
+        let mut sim = flat_world(d);
+        research_triggers(&mut sim);
+        let labs = powered_labs(&mut sim, 1, 10);
+        let automation = tech(&sim, "automation");
+        input(&mut sim, InputAction::QueueResearch { tech: automation, front: false });
+        assert_eq!(sim.research().current(), Some(automation));
+        // 10 units × 10 s at lab speed 1. The lab's buffer fills on the first tick.
+        let t = 1 + ticks_until(&mut sim, 10_000, |s| researched(s, "automation"));
+        assert!((6000..=6002).contains(&t), "took {t} ticks");
+        assert!(enabled(&sim, "assembling-machine-1"));
+        assert!(enabled(&sim, "long-handed-inserter"));
+        let EntityState::Lab(l) = &sim.entity(labs[0]).unwrap().state else { panic!() };
+        assert!(l.input.is_empty(), "all 10 packs used: {:?}", l.input);
+        assert_eq!(l.opened[0], 0);
+        assert_eq!(sim.research().current(), None);
+    }
+
+    #[test]
+    fn two_labs_research_twice_as_fast() {
+        let d = game!();
+        let mut sim = flat_world(d);
+        research_triggers(&mut sim);
+        powered_labs(&mut sim, 2, 10);
+        let automation = tech(&sim, "automation");
+        input(&mut sim, InputAction::QueueResearch { tech: automation, front: false });
+        let t = 1 + ticks_until(&mut sim, 10_000, |s| researched(s, "automation"));
+        assert!((3000..=3002).contains(&t), "took {t} ticks");
+    }
+
+    #[test]
+    fn queueing_adds_missing_prerequisites_first() {
+        let d = game!();
+        let mut sim = flat_world(d);
+        let auto2 = tech(&sim, "automation-2");
+        // Trigger technologies cannot be queued.
+        input(&mut sim, InputAction::QueueResearch { tech: auto2, front: false });
+        assert!(sim.research().queue.is_empty());
+        research_triggers(&mut sim);
+        input(&mut sim, InputAction::QueueResearch { tech: auto2, front: false });
+        let q = &sim.research().queue;
+        assert_eq!(q.last(), Some(&auto2));
+        for (i, t) in q.iter().enumerate() {
+            for p in &sim.prototypes().technology(*t).prerequisites {
+                let pos = q.iter().position(|x| x == p);
+                assert!(sim.research().is_researched(*p) || pos.is_some_and(|pi| pi < i));
+            }
+        }
+        // Removing a prerequisite removes what depends on it.
+        let first = q[0];
+        input(&mut sim, InputAction::DequeueResearch(first));
+        assert!(!sim.research().queue.contains(&auto2));
+    }
+
+    #[test]
+    fn infinite_technologies_use_the_count_formula() {
+        let d = game!();
+        let mut sim = flat_world(d);
+        let t = tech(&sim, "mining-productivity-4");
+        // 2500 * (L - 3) units of 60 s.
+        let per_unit = 60 * 60 * Fixed::ONE.raw() as u128;
+        assert_eq!(sim.research().work_needed(sim.prototypes(), t), 2500 * per_unit);
+        sim.finish_research(t);
+        assert!(!sim.research().is_researched(t));
+        assert_eq!(sim.research().level[t.index()], 5);
+        assert_eq!(sim.research().work_needed(sim.prototypes(), t), 5000 * per_unit);
+    }
+
+    #[test]
+    fn steel_axe_doubles_hand_mining_speed() {
+        let d = game!();
+        let mut sim = flat_world(d);
+        let axe = tech(&sim, "steel-axe");
+        sim.finish_research(axe);
+        ore(&mut sim, "iron-ore", 1, 0, 50);
+        input(&mut sim, InputAction::SetMining(Some(MapPosition::tile_center(TilePosition::new(1, 0)))));
+        let t = 1 + ticks_until(&mut sim, 1000, |s| inventory_count(s, "iron-ore") == 1);
+        // Mining speed 0.5 × (1 + 1) = 1: one second.
+        assert_eq!(t, 60);
+    }
+
+    #[test]
+    fn mining_productivity_gives_an_extra_ore_every_tenth() {
+        let d = game!();
+        let mut sim = flat_world(d);
+        let prod = tech(&sim, "mining-productivity-1");
+        sim.finish_research(prod);
+        let tiles = [(10, 10), (11, 10), (10, 11), (11, 11)];
+        for (x, y) in tiles {
+            ore(&mut sim, "iron-ore", x, y, 1000);
+        }
+        let drill = place(&mut sim, "burner-mining-drill", 10, 10, Direction::NORTH);
+        let chest = place(&mut sim, "iron-chest", 10, 9, Direction::NORTH);
+        insert(&mut sim, drill, "coal", 20);
+        // +10%: the bar fills on every tenth ore, which then yields two.
+        let _ = ticks_until(&mut sim, 20_000, |s| container_count(s, chest, "iron-ore") >= 11);
+        let mined: u32 =
+            tiles.iter().map(|(x, y)| 1000 - sim.surface.resource(TilePosition::new(*x, *y)).unwrap().amount).sum();
+        assert_eq!(mined, 10);
+    }
+
+    #[test]
+    fn character_inventory_bonus_adds_slots() {
+        let d = game!();
+        let mut sim = flat_world(d);
+        let before = sim.player(0).unwrap().character.as_ref().unwrap().inventory.len();
+        let toolbelt = tech(&sim, "toolbelt");
+        sim.finish_research(toolbelt);
+        let after = sim.player(0).unwrap().character.as_ref().unwrap().inventory.len();
+        assert_eq!(after, before + 10);
+    }
 }

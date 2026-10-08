@@ -19,6 +19,10 @@ pub(crate) fn entity_inventory(state: &mut EntityState, which: EntityInventory) 
             _ => Some(&mut c.energy),
         },
         EntityState::Container(inv) => return (which == EntityInventory::Main).then_some(inv),
+        EntityState::Lab(l) => match which {
+            EntityInventory::Input => return Some(&mut l.input),
+            _ => None,
+        },
         _ => None,
     }?;
     let b = energy.burner_mut()?;
@@ -46,12 +50,15 @@ fn slot_accepts(
         EntityInventory::Fuel => proto.energy_source().is_some_and(|s| Burner::accepts(db, s, item)),
         EntityInventory::Input => match &e.state {
             EntityState::Crafter(c) if c.furnace => {
-                CrafterState::new(proto).ingredient_room(db, proto, item, InsertSource::Player) > 0
+                CrafterState::new(proto).ingredient_room(db, &sim.research, proto, item, InsertSource::Player) > 0
                     && c.input.first_item().is_none_or(|i| i == item)
             }
             EntityState::Crafter(c) => c
                 .recipe
                 .is_some_and(|r| db.recipe(r).ingredients.get(slot).is_some_and(|i| i.what == ItemOrFluid::Item(item))),
+            EntityState::Lab(_) => {
+                matches!(&proto.data, EntityData::Lab { inputs, .. } if inputs.get(slot) == Some(&item))
+            }
             _ => false,
         },
     }

@@ -5,6 +5,7 @@ use crate::fixed::Fixed;
 use crate::inventory::{Inventory, ItemStack};
 use crate::map::{Direction, MapPosition, SUBTILES_PER_TILE, TilePosition};
 use crate::proto::{EnergySource, EntityData, EntityProto, ItemId, ItemOrFluid, PrototypeDb, RecipeId};
+use crate::research::{Research, TriggerEvent};
 use crate::world::{EntityId, EntityState, InsertSource, Simulation};
 
 pub(crate) fn update_entity(sim: &mut Simulation, id: EntityId) {
@@ -13,6 +14,7 @@ pub(crate) fn update_entity(sim: &mut Simulation, id: EntityId) {
         EntityState::Drill(_) => update_drill(sim, id),
         EntityState::Crafter(_) => update_crafter(sim, id),
         EntityState::Inserter(_) => update_inserter(sim, id),
+        EntityState::Lab(_) => crate::research::update_lab(sim, id),
         _ => {}
     }
 }
@@ -74,6 +76,8 @@ pub struct DrillState {
     /// Mined item waiting for space at the output.
     pub output: Option<ItemStack>,
     pub working: bool,
+    /// Mining productivity bar, 0..1.
+    pub productivity: Fixed,
 }
 
 impl DrillState {
@@ -147,16 +151,25 @@ fn update_drill(sim: &mut Simulation, id: EntityId) {
     d.working = frac.is_positive();
     d.progress += *mining_speed * frac;
 
-    let res = sim.surface.resource(target).unwrap();
-    let rp = db.entity(res.proto);
+    let res_proto = sim.surface.resource(target).unwrap().proto;
+    let rp = db.entity(res_proto);
     let minable = rp.minable.as_ref().unwrap();
     let threshold = minable.mining_ticks;
     if d.progress >= threshold {
         d.progress -= threshold;
         let infinite = matches!(rp.data, EntityData::Resource { infinite: true, .. });
         sim.surface.deplete(target, 1, infinite);
+        sim.research_trigger(TriggerEvent::Mined(res_proto));
+        // Mining productivity fills a bar; each time it is full an extra result is made.
+        d.productivity += sim.research.modifier("mining-drill-productivity-bonus", None);
+        let extra = if d.productivity >= Fixed::ONE {
+            d.productivity -= Fixed::ONE;
+            1
+        } else {
+            0
+        };
         if let Some(item) = minable.results.iter().find_map(|r| match (r.what, r.fixed_count()) {
-            (ItemOrFluid::Item(i), Some(n)) => Some(ItemStack::new(i, n)),
+            (ItemOrFluid::Item(i), Some(n)) => Some(ItemStack::new(i, n + extra)),
             _ => None,
         }) {
             d.output = Some(item);
@@ -258,11 +271,18 @@ impl CrafterState {
         out
     }
 
-    fn furnace_recipe_for(db: &PrototypeDb, proto: &EntityProto, item: ItemId) -> Option<RecipeId> {
+    /// The enabled recipe a furnace uses for `item`.
+    fn furnace_recipe_for(
+        db: &PrototypeDb,
+        research: &Research,
+        proto: &EntityProto,
+        item: ItemId,
+    ) -> Option<RecipeId> {
         let EntityData::CraftingMachine { crafting_categories, .. } = &proto.data else { return None };
         db.recipe_ids().find(|r| {
             let rec = db.recipe(*r);
-            crafting_categories.contains(&rec.category)
+            research.recipe_enabled(*r)
+                && crafting_categories.contains(&rec.category)
                 && rec.ingredients.len() == 1
                 && rec.ingredients[0].what == ItemOrFluid::Item(item)
         })
@@ -270,7 +290,14 @@ impl CrafterState {
 
     /// How many of `item` could be inserted as an ingredient, honouring automatic
     /// insertion limits for `Automated`.
-    pub fn ingredient_room(&self, db: &PrototypeDb, proto: &EntityProto, item: ItemId, source: InsertSource) -> u32 {
+    pub fn ingredient_room(
+        &self,
+        db: &PrototypeDb,
+        research: &Research,
+        proto: &EntityProto,
+        item: ItemId,
+        source: InsertSource,
+    ) -> u32 {
         let EntityData::CraftingMachine { crafting_speed, .. } = &proto.data else { return 0 };
         let recipe = if self.furnace {
             if let Some(existing) = self.input.first_item()
@@ -278,7 +305,7 @@ impl CrafterState {
             {
                 return 0;
             }
-            match Self::furnace_recipe_for(db, proto, item) {
+            match Self::furnace_recipe_for(db, research, proto, item) {
                 Some(r) => r,
                 None => return 0,
             }
@@ -305,12 +332,13 @@ impl CrafterState {
     pub fn insert_ingredient(
         &mut self,
         db: &PrototypeDb,
+        research: &Research,
         proto: &EntityProto,
         item: ItemId,
         count: u32,
         source: InsertSource,
     ) -> u32 {
-        let n = count.min(self.ingredient_room(db, proto, item, source));
+        let n = count.min(self.ingredient_room(db, research, proto, item, source));
         if n == 0 {
             return 0;
         }
@@ -389,7 +417,11 @@ fn update_crafter(sim: &mut Simulation, id: EntityId) {
         c.energy.draw(&db, energy_source, *drain);
     }
     if c.furnace && !c.crafting {
-        c.recipe = c.input.first_item().and_then(|i| CrafterState::furnace_recipe_for(&db, proto, i)).or(c.recipe);
+        c.recipe = c
+            .input
+            .first_item()
+            .and_then(|i| CrafterState::furnace_recipe_for(&db, &sim.research, proto, i))
+            .or(c.recipe);
     }
     if !c.crafting && !c.try_start(&db) {
         c.progress = Fixed::ZERO;
@@ -400,6 +432,7 @@ fn update_crafter(sim: &mut Simulation, id: EntityId) {
     c.progress += *crafting_speed * energy_fraction(got, *energy_usage);
     let r = c.recipe.unwrap();
     let ticks = db.recipe(r).ticks();
+    let mut crafted = Vec::new();
     if c.progress >= ticks && c.results_fit(&db, r) {
         c.progress -= ticks;
         for p in &db.recipe(r).results {
@@ -416,17 +449,27 @@ fn update_crafter(sim: &mut Simulation, id: EntityId) {
                     }
                 };
                 c.output.insert(&db, i, n);
+                crafted.push((i, n));
             }
         }
         c.crafting = false;
         if c.furnace {
-            c.recipe = c.input.first_item().and_then(|i| CrafterState::furnace_recipe_for(&db, proto, i)).or(c.recipe);
+            c.recipe = c
+                .input
+                .first_item()
+                .and_then(|i| CrafterState::furnace_recipe_for(&db, &sim.research, proto, i))
+                .or(c.recipe);
         }
         if !c.try_start(&db) {
             c.progress = Fixed::ZERO;
         }
     }
     put_state(sim, id, EntityState::Crafter(c));
+    for (item, n) in crafted {
+        if n > 0 {
+            sim.research_trigger(TriggerEvent::Crafted(item, n));
+        }
+    }
 }
 
 // ----- inserters -----

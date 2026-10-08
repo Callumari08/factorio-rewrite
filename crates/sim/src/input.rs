@@ -4,7 +4,7 @@
 //! same list in the same order, so they must be plain data with a total order.
 
 use crate::map::{Direction, MapPosition};
-use crate::proto::{EntityProtoId, ItemId, RecipeId};
+use crate::proto::{EntityProtoId, ItemId, RecipeId, TechId};
 
 /// Which inventory of an entity a GUI slot belongs to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -73,6 +73,13 @@ pub enum InputAction {
     CheatAllItems,
     /// Factorio's `/cheat`: instant crafting without ingredients.
     SetCheatMode(bool),
+    /// Adds a technology (and missing prerequisites) to the research queue, at the front
+    /// when `front` is set.
+    QueueResearch { tech: TechId, front: bool },
+    /// Removes a technology, and queued technologies needing it, from the research queue.
+    DequeueResearch(TechId),
+    /// Researches every technology (Factorio's `/cheat all`).
+    CheatResearchAll,
     /// Sandbox/testing: adds items to the character's inventory.
     CheatItems { item: ItemId, count: u32 },
     /// Sandbox/testing: places an entity without needing the item or reach.

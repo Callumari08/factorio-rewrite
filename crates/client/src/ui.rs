@@ -11,6 +11,7 @@ use factorio_sim::input::{EntityInventory, InputAction, MouseButton as SimButton
 use factorio_sim::inventory::Inventory;
 use factorio_sim::player::{Character, QUICKBAR_SLOTS, max_craftable};
 use factorio_sim::proto::{EnergySource, EntityData, ItemId, ItemOrFluid, PrototypeDb, RecipeId};
+use factorio_sim::research::Research;
 use factorio_sim::world::{EntityId, EntityState};
 
 use crate::controls::{MouseWorld, UiState};
@@ -446,6 +447,7 @@ struct Ctx<'a> {
     data: &'a Data,
     fonts: &'a Fonts,
     db: &'a PrototypeDb,
+    research: &'a Research,
 }
 
 impl Ctx<'_> {
@@ -614,7 +616,8 @@ fn quickbar(
     }
     *last = sig;
     let db = sim.0.prototypes();
-    let mut ctx = Ctx { sprites: &mut sprites, assets: &assets, data: &data, fonts: &fonts, db };
+    let mut ctx =
+        Ctx { sprites: &mut sprites, assets: &assets, data: &data, fonts: &fonts, db, research: sim.0.research() };
     commands.entity(*root).despawn_related::<Children>();
     commands.entity(*root).with_children(|r| {
         for row in 0..QUICKBAR_SLOTS / 10 {
@@ -658,7 +661,8 @@ fn queue(
     }
     *last = sig;
     let db = sim.0.prototypes();
-    let mut ctx = Ctx { sprites: &mut sprites, assets: &assets, data: &data, fonts: &fonts, db };
+    let mut ctx =
+        Ctx { sprites: &mut sprites, assets: &assets, data: &data, fonts: &fonts, db, research: sim.0.research() };
     commands.entity(*root).despawn_related::<Children>();
     commands.entity(*root).with_children(|p| {
         for (i, job) in c.queue.iter().enumerate() {
@@ -708,7 +712,7 @@ fn window(
     let entity_sig = opened.and_then(|id| sim.0.entity(id)).map(|e| format!("{:?}", e.state)).unwrap_or_default();
     let belt = opened.and_then(|id| sim.0.belts.get(id)).map(|b| b.item_count());
     let sig = format!(
-        "{:?}|{:?}|{}|{}|{}|{:?}|{}|{}|{cheat}",
+        "{:?}|{:?}|{}|{}|{}|{:?}|{}|{}|{cheat}|{}",
         c.inventory,
         opened,
         entity_sig,
@@ -717,14 +721,16 @@ fn window(
         belt,
         chart.range,
         // Progress bars and graphs refresh a few times a second.
-        if opened.is_some() { sim.0.tick() / 10 } else { 0 }
+        if opened.is_some() { sim.0.tick() / 10 } else { 0 },
+        sim.0.research().recipes.iter().filter(|e| **e).count()
     );
     if *last == sig {
         return;
     }
     *last = sig;
     let root = root.0;
-    let mut ctx = Ctx { sprites: &mut sprites, assets: &assets, data: &data, fonts: &fonts, db };
+    let mut ctx =
+        Ctx { sprites: &mut sprites, assets: &assets, data: &data, fonts: &fonts, db, research: sim.0.research() };
     commands.entity(root).despawn_related::<Children>();
     commands.entity(root).with_children(|w| {
         panel(w, SLOT_PX * 10.0 + 16.0, |p| {
@@ -744,9 +750,11 @@ fn crafting_panel(p: &mut ChildSpawnerCommands, ctx: &mut Ctx, names: &Names, c:
         EntityData::Character { crafting_categories, .. } => crafting_categories.clone(),
         _ => Vec::new(),
     };
+    let enabled = &ctx.research.recipes;
     let hand = |r: RecipeId| {
         let rec = db.recipe(r);
-        cats.contains(&rec.category)
+        enabled[r.index()]
+            && cats.contains(&rec.category)
             && rec.ingredients.iter().all(|i| matches!(i.what, ItemOrFluid::Item(_)))
             && rec.results.iter().all(|x| matches!(x.what, ItemOrFluid::Item(_)))
     };
@@ -802,7 +810,7 @@ fn crafting_panel(p: &mut ChildSpawnerCommands, ctx: &mut Ctx, names: &Names, c:
         }
         grid(p, 10, |g| {
             for r in recipes {
-                let can = if cheat { 1 } else { max_craftable(db, &cats, &c.inventory, r) };
+                let can = if cheat { 1 } else { max_craftable(db, &cats, enabled, &c.inventory, r) };
                 let main = db.recipe(r).results.first().and_then(|x| match x.what {
                     ItemOrFluid::Item(i) => Some(i),
                     _ => None,
@@ -1029,7 +1037,8 @@ fn recipe_chooser(
                 .copied()
                 .filter(|r| {
                     let rec = db.recipe(*r);
-                    crafting_categories.contains(&rec.category)
+                    ctx.research.recipe_enabled(*r)
+                        && crafting_categories.contains(&rec.category)
                         && rec.ingredients.iter().all(|i| matches!(i.what, ItemOrFluid::Item(_)))
                         && rec.results.iter().all(|x| matches!(x.what, ItemOrFluid::Item(_)))
                 })
@@ -1154,7 +1163,8 @@ fn tooltip(
     }
     *last = sig;
     let db = sim.0.prototypes();
-    let mut ctx = Ctx { sprites: &mut sprites, assets: &assets, data: &data, fonts: &fonts, db };
+    let mut ctx =
+        Ctx { sprites: &mut sprites, assets: &assets, data: &data, fonts: &fonts, db, research: sim.0.research() };
     let root = root.0;
     commands.entity(root).despawn_related::<Children>();
     commands.entity(root).with_children(|p| match tip {

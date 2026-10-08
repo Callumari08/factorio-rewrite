@@ -14,6 +14,7 @@ use crate::map::{Area, ChunkPosition, Direction, MapPosition, SUBTILES_PER_TILE,
 use crate::player::Player;
 use crate::power::{FluidEntity, PowerSystem};
 use crate::proto::{EntityData, EntityProto, EntityProtoId, ItemId, PrototypeDb};
+use crate::research::{LabState, Research, TriggerEvent};
 use crate::rng::DetRng;
 use crate::surface::{MapGenSettings, Surface};
 
@@ -45,6 +46,7 @@ pub enum EntityState {
     Belt,
     Pole,
     Fluid(FluidEntity),
+    Lab(LabState),
 }
 
 /// Why something could not be built.
@@ -86,11 +88,13 @@ pub struct Simulation {
     pub power: PowerSystem,
     pub(crate) ground_items: BTreeMap<MapPosition, ItemStack>,
     pub(crate) players: BTreeMap<u16, Player>,
+    pub(crate) research: Research,
 }
 
 impl Simulation {
     pub fn new(prototypes: Arc<PrototypeDb>, mapgen: MapGenSettings) -> Self {
         let mut sim = Simulation {
+            research: Research::new(&prototypes),
             rng: DetRng::new(mapgen.seed),
             db: prototypes,
             tick: 0,
@@ -206,6 +210,23 @@ impl Simulation {
             }
             return;
         }
+        match input.action {
+            InputAction::QueueResearch { tech, front } => {
+                let db = self.db.clone();
+                let _ = self.research.enqueue(&db, tech, front);
+                return;
+            }
+            InputAction::DequeueResearch(tech) => {
+                let db = self.db.clone();
+                self.research.dequeue(&db, tech);
+                return;
+            }
+            InputAction::CheatResearchAll => {
+                self.research_all();
+                return;
+            }
+            _ => {}
+        }
         if let InputAction::CheatInsert { position, item, count } = input.action {
             if let Some(id) = self.entity_at(position) {
                 self.insert_into_entity(id, item, count, InsertSource::Player);
@@ -235,6 +256,7 @@ impl Simulation {
         }
         let character = crate::player::Character::new(&self.db, proto, spot);
         self.players.entry(player).or_default().character = Some(character);
+        crate::player::apply_research_bonuses(self);
     }
 
     // ----- spatial queries -----
@@ -332,6 +354,7 @@ impl Simulation {
         }
         self.entities.insert(id, Entity { proto: proto_id, position, direction, state });
         self.power.mark_dirty();
+        self.research_trigger(TriggerEvent::Built(proto_id));
         Ok(id)
     }
 
@@ -381,6 +404,7 @@ impl Simulation {
                 EntityState::Belt
             }
             EntityData::ElectricPole { .. } => EntityState::Pole,
+            EntityData::Lab { .. } => EntityState::Lab(LabState::new(proto)),
             EntityData::OffshorePump { .. }
             | EntityData::Boiler { .. }
             | EntityData::Generator { .. }
@@ -436,6 +460,7 @@ impl Simulation {
                 }
             }
             EntityState::Fluid(mut f) => f.energy.take_contents(&mut add_inv(&mut out)),
+            EntityState::Lab(mut l) => add_inv(&mut out)(&mut l.input),
             _ => {}
         }
         out
@@ -567,8 +592,9 @@ impl Simulation {
                 if fuel > 0 {
                     return fuel;
                 }
-                c.insert_ingredient(&db, proto, item, count, source)
+                c.insert_ingredient(&db, &self.research, proto, item, count, source)
             }
+            EntityState::Lab(l) => l.insert(&db, proto, item, count, source == InsertSource::Automated),
             _ => 0,
         }
     }
@@ -590,8 +616,9 @@ impl Simulation {
             EntityState::Inserter(i) => fuel_ok(&i.energy),
             EntityState::Fluid(f) => fuel_ok(&f.energy),
             EntityState::Crafter(c) => {
-                fuel_ok(&c.energy) || c.ingredient_room(db, proto, item, InsertSource::Automated) > 0
+                fuel_ok(&c.energy) || c.ingredient_room(db, &self.research, proto, item, InsertSource::Automated) > 0
             }
+            EntityState::Lab(l) => l.room_for(db, proto, item, true) > 0,
             _ => false,
         }
     }
@@ -610,6 +637,8 @@ impl Simulation {
                 v
             }
             EntityState::Drill(d) => d.energy.burner().map(|b| items(&b.burnt)).unwrap_or_default(),
+            // Inserters can pass science packs on from one lab to the next.
+            EntityState::Lab(l) => items(&l.input),
             _ => Vec::new(),
         }
     }
@@ -639,6 +668,7 @@ impl Simulation {
                 take(&mut c.output).or_else(|| c.energy.burner_mut().and_then(|b| take(&mut b.burnt)))
             }
             EntityState::Drill(d) => d.energy.burner_mut().and_then(|b| take(&mut b.burnt)),
+            EntityState::Lab(l) => take(&mut l.input),
             _ => None,
         }
     }
@@ -659,6 +689,7 @@ impl Simulation {
         }
         self.ground_items.hash(&mut h);
         self.players.hash(&mut h);
+        self.research.hash(&mut h);
         for (pos, chunk) in self.surface.chunks() {
             pos.hash(&mut h);
             chunk.hash(&mut h);

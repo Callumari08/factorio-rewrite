@@ -27,6 +27,7 @@ id_type!(FluidId);
 id_type!(RecipeId);
 id_type!(EntityProtoId);
 id_type!(TileId);
+id_type!(TechId);
 
 /// Energy in joules. Power values are stored as joules per tick.
 pub type Energy = Fixed;
@@ -59,6 +60,8 @@ pub struct ItemProto {
     /// Position in Factorio's item ordering (group, subgroup, order, name), used when
     /// sorting inventories.
     pub sort_index: u32,
+    /// Durability of `tool` items (science packs); a lab uses it up while researching.
+    pub durability: Option<Fixed>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -297,6 +300,13 @@ pub enum EntityData {
     Pipe {
         fluid_box: FluidBoxProto,
     },
+    Lab {
+        /// Science packs the lab accepts, one input slot each, in prototype order.
+        inputs: Vec<ItemId>,
+        researching_speed: Fixed,
+        energy_usage: Energy,
+        energy_source: EnergySource,
+    },
     /// Anything not simulated yet; it can still be placed and drawn.
     Other,
 }
@@ -371,8 +381,192 @@ impl EntityProto {
             EntityData::MiningDrill { energy_source, .. }
             | EntityData::CraftingMachine { energy_source, .. }
             | EntityData::Inserter { energy_source, .. }
-            | EntityData::Boiler { energy_source, .. } => Some(energy_source),
+            | EntityData::Boiler { energy_source, .. }
+            | EntityData::Lab { energy_source, .. } => Some(energy_source),
             _ => None,
+        }
+    }
+}
+
+/// A technology's research cost: `count` units, each taking `time_ticks` at lab speed 1
+/// and one `amount` of each science pack.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResearchUnit {
+    pub count: ResearchCount,
+    pub ingredients: Vec<(ItemId, u32)>,
+    /// Ticks per unit at researching speed 1.
+    pub time_ticks: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ResearchCount {
+    Fixed(u64),
+    /// `count_formula` of leveled technologies, in terms of the level `L`.
+    Formula(CountFormula),
+}
+
+/// Something that researches a technology without labs (Factorio 2.0 `research_trigger`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ResearchTrigger {
+    CraftItem {
+        item: ItemId,
+        count: u32,
+    },
+    MineEntity {
+        entity: EntityProtoId,
+    },
+    BuildEntity {
+        entity: EntityProtoId,
+    },
+    CraftFluid {
+        fluid: FluidId,
+        amount: Fixed,
+    },
+    /// Trigger types that cannot happen yet (rockets, space platforms, spawners).
+    Other(String),
+}
+
+/// One entry of a technology's `effects`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TechEffect {
+    UnlockRecipe(RecipeId),
+    GiveItem {
+        item: ItemId,
+        count: u32,
+    },
+    /// Every other modifier, keyed by its `type` plus its `ammo_category`, `turret_id` or
+    /// similar qualifier, e.g. `("ammo-damage", "bullet")`. Boolean effects have modifier 1.
+    Modifier {
+        kind: String,
+        qualifier: String,
+        modifier: Fixed,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TechnologyProto {
+    pub name: String,
+    pub prerequisites: Vec<TechId>,
+    pub unit: Option<ResearchUnit>,
+    pub trigger: Option<ResearchTrigger>,
+    pub effects: Vec<TechEffect>,
+    pub enabled: bool,
+    pub hidden: bool,
+    pub upgrade: bool,
+    pub essential: bool,
+    /// First level, from a trailing `-N` in the name (Factorio's convention), else 1.
+    pub level: u32,
+    /// Last level; `None` for `max_level = "infinite"`. Equal to `level` for normal techs.
+    pub max_level: Option<u32>,
+    pub order: String,
+}
+
+/// An integer `count_formula`: numbers, `L`/`l`, `+ - * / ^` and parentheses.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CountFormula {
+    Num(i128),
+    Level,
+    Neg(Box<CountFormula>),
+    Bin(char, Box<CountFormula>, Box<CountFormula>),
+}
+
+impl CountFormula {
+    pub fn parse(s: &str) -> Result<CountFormula, String> {
+        let tokens: Vec<char> = s.chars().filter(|c| !c.is_whitespace()).collect();
+        let mut pos = 0;
+        let f = Self::sum(&tokens, &mut pos)?;
+        if pos != tokens.len() {
+            return Err(format!("unexpected '{}' in count formula '{s}'", tokens[pos]));
+        }
+        Ok(f)
+    }
+
+    fn sum(t: &[char], pos: &mut usize) -> Result<CountFormula, String> {
+        let mut lhs = Self::product(t, pos)?;
+        while let Some(&op @ ('+' | '-')) = t.get(*pos) {
+            *pos += 1;
+            lhs = CountFormula::Bin(op, Box::new(lhs), Box::new(Self::product(t, pos)?));
+        }
+        Ok(lhs)
+    }
+
+    fn product(t: &[char], pos: &mut usize) -> Result<CountFormula, String> {
+        let mut lhs = Self::power(t, pos)?;
+        while let Some(&op @ ('*' | '/')) = t.get(*pos) {
+            *pos += 1;
+            lhs = CountFormula::Bin(op, Box::new(lhs), Box::new(Self::power(t, pos)?));
+        }
+        Ok(lhs)
+    }
+
+    fn power(t: &[char], pos: &mut usize) -> Result<CountFormula, String> {
+        let base = Self::atom(t, pos)?;
+        if t.get(*pos) == Some(&'^') {
+            *pos += 1;
+            // Right associative.
+            return Ok(CountFormula::Bin('^', Box::new(base), Box::new(Self::power(t, pos)?)));
+        }
+        Ok(base)
+    }
+
+    fn atom(t: &[char], pos: &mut usize) -> Result<CountFormula, String> {
+        match t.get(*pos) {
+            Some('(') => {
+                *pos += 1;
+                let f = Self::sum(t, pos)?;
+                if t.get(*pos) != Some(&')') {
+                    return Err("missing ')' in count formula".into());
+                }
+                *pos += 1;
+                Ok(f)
+            }
+            Some('-') => {
+                *pos += 1;
+                Ok(CountFormula::Neg(Box::new(Self::atom(t, pos)?)))
+            }
+            Some('L' | 'l') => {
+                *pos += 1;
+                Ok(CountFormula::Level)
+            }
+            Some(c) if c.is_ascii_digit() => {
+                let start = *pos;
+                while t.get(*pos).is_some_and(|c| c.is_ascii_digit()) {
+                    *pos += 1;
+                }
+                let s: String = t[start..*pos].iter().collect();
+                s.parse().map(CountFormula::Num).map_err(|e| format!("{e}"))
+            }
+            other => Err(format!("unexpected {other:?} in count formula")),
+        }
+    }
+
+    /// Evaluates for a level; saturates instead of overflowing.
+    pub fn eval(&self, level: u32) -> i128 {
+        match self {
+            CountFormula::Num(n) => *n,
+            CountFormula::Level => level as i128,
+            CountFormula::Neg(a) => -a.eval(level),
+            CountFormula::Bin(op, a, b) => {
+                let (a, b) = (a.eval(level), b.eval(level));
+                match op {
+                    '+' => a.saturating_add(b),
+                    '-' => a.saturating_sub(b),
+                    '*' => a.saturating_mul(b),
+                    '/' if b != 0 => a / b,
+                    '^' if b >= 0 => a.checked_pow(b.min(u32::MAX as i128) as u32).unwrap_or(i128::MAX),
+                    _ => 0,
+                }
+            }
+        }
+    }
+}
+
+impl ResearchUnit {
+    /// Units needed for the given level.
+    pub fn count_for(&self, level: u32) -> u64 {
+        match &self.count {
+            ResearchCount::Fixed(n) => *n,
+            ResearchCount::Formula(f) => f.eval(level).clamp(1, u64::MAX as i128) as u64,
         }
     }
 }
@@ -391,6 +585,7 @@ pub struct PrototypeDb {
     pub recipes: Vec<RecipeProto>,
     pub entities: Vec<EntityProto>,
     pub tiles: Vec<TileProto>,
+    pub technologies: Vec<TechnologyProto>,
     pub collision_layers: Vec<String>,
     pub special: Special,
     item_index: BTreeMap<String, ItemId>,
@@ -398,6 +593,7 @@ pub struct PrototypeDb {
     recipe_index: BTreeMap<String, RecipeId>,
     entity_index: BTreeMap<String, EntityProtoId>,
     tile_index: BTreeMap<String, TileId>,
+    tech_index: BTreeMap<String, TechId>,
 }
 
 impl PrototypeDb {
@@ -421,6 +617,8 @@ impl PrototypeDb {
             recipe_index: index(&recipes, |t| &t.name, RecipeId),
             entity_index: index(&entities, |t| &t.name, EntityProtoId),
             tile_index: index(&tiles, |t| &t.name, TileId),
+            tech_index: BTreeMap::new(),
+            technologies: Vec::new(),
             items,
             fluids,
             recipes,
@@ -441,6 +639,23 @@ impl PrototypeDb {
                     .map(|i| EntityProtoId(i as u16))
             });
         db
+    }
+
+    /// Adds the technologies (sorted by name; ids in them index this list).
+    pub fn set_technologies(&mut self, technologies: Vec<TechnologyProto>) {
+        assert!(technologies.windows(2).all(|w| w[0].name < w[1].name), "technologies must be sorted by name");
+        self.tech_index = technologies.iter().enumerate().map(|(i, t)| (t.name.clone(), TechId(i as u16))).collect();
+        self.technologies = technologies;
+    }
+
+    pub fn technology(&self, id: TechId) -> &TechnologyProto {
+        &self.technologies[id.index()]
+    }
+    pub fn technology_id(&self, name: &str) -> Option<TechId> {
+        self.tech_index.get(name).copied()
+    }
+    pub fn technology_ids(&self) -> impl Iterator<Item = TechId> {
+        (0..self.technologies.len() as u16).map(TechId)
     }
 
     pub fn item(&self, id: ItemId) -> &ItemProto {

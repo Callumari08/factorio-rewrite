@@ -72,9 +72,20 @@ struct CharacterStats {
     item_pickup_distance: Fixed,
     mining_categories: Vec<String>,
     crafting_categories: Vec<String>,
+    crafting_speed: Fixed,
 }
 
-fn stats(db: &PrototypeDb, proto: EntityProtoId) -> CharacterStats {
+/// The character's stats with research bonuses applied.
+fn stats(sim: &Simulation, proto: EntityProtoId) -> CharacterStats {
+    let mut st = base_stats(&sim.db, proto);
+    let r = &sim.research;
+    st.mining_speed = st.mining_speed * (Fixed::ONE + r.modifier("character-mining-speed", None));
+    st.running_speed = st.running_speed * (Fixed::ONE + r.modifier("character-running-speed", None));
+    st.crafting_speed = Fixed::ONE + r.modifier("character-crafting-speed", None);
+    st
+}
+
+fn base_stats(db: &PrototypeDb, proto: EntityProtoId) -> CharacterStats {
     match &db.entity(proto).data {
         EntityData::Character {
             running_speed,
@@ -95,6 +106,7 @@ fn stats(db: &PrototypeDb, proto: EntityProtoId) -> CharacterStats {
             item_pickup_distance: *item_pickup_distance,
             mining_categories: mining_categories.clone(),
             crafting_categories: crafting_categories.clone(),
+            crafting_speed: Fixed::ONE,
         },
         _ => panic!("not a character prototype"),
     }
@@ -164,7 +176,7 @@ pub(crate) fn character_fits(sim: &Simulation, proto: EntityProtoId, at: MapPosi
 pub(crate) fn apply_input(sim: &mut Simulation, player: u16, action: &InputAction) {
     let db = sim.db.clone();
     let Some(c) = sim.players.get(&player).and_then(|p| p.character.as_ref()) else { return };
-    let st = stats(&db, c.proto);
+    let st = stats(sim, c.proto);
     let me = c.position();
     match *action {
         InputAction::SetWalking(d) => character_mut(sim, player).walking = d,
@@ -253,6 +265,9 @@ pub(crate) fn apply_input(sim: &mut Simulation, player: u16, action: &InputActio
             }
         }
         InputAction::SetRecipe { position, recipe } => {
+            if recipe.is_some_and(|r| !sim.research.recipe_enabled(r)) {
+                return;
+            }
             let Some(id) = sim.entity_at(position) else { return };
             if !in_reach(sim, me, id, st.reach_distance) {
                 return;
@@ -295,7 +310,10 @@ pub(crate) fn apply_input(sim: &mut Simulation, player: u16, action: &InputActio
         InputAction::JoinGame
         | InputAction::CheatPlaceEntity { .. }
         | InputAction::CheatInsert { .. }
-        | InputAction::CheatSetRecipe { .. } => {}
+        | InputAction::CheatSetRecipe { .. }
+        | InputAction::QueueResearch { .. }
+        | InputAction::DequeueResearch(_)
+        | InputAction::CheatResearchAll => {}
     }
 }
 
@@ -346,6 +364,26 @@ fn in_reach(sim: &Simulation, me: MapPosition, id: EntityId, reach: Fixed) -> bo
     distance_to_area(me, &Simulation::footprint(p, e.position, e.direction)) <= reach
 }
 
+/// Gives items to the player's character, if it has one, spilling what does not fit.
+pub(crate) fn give_or_spill(sim: &mut Simulation, player: u16, item: ItemId, count: u32) {
+    if sim.players.get(&player).is_some_and(|p| p.character.is_some()) {
+        give(sim, player, item, count);
+    }
+}
+
+/// Applies research bonuses that change character state (inventory size).
+pub(crate) fn apply_research_bonuses(sim: &mut Simulation) {
+    let bonus = sim.research.modifier("character-inventory-slots-bonus", None).floor_int().max(0) as u32;
+    let db = sim.db.clone();
+    for p in sim.players.values_mut() {
+        if let Some(c) = &mut p.character
+            && let EntityData::Character { inventory_size, .. } = &db.entity(c.proto).data
+        {
+            c.inventory.grow_to(inventory_size + bonus);
+        }
+    }
+}
+
 /// Gives items to the character, spilling what does not fit on the ground.
 fn give(sim: &mut Simulation, player: u16, item: ItemId, count: u32) {
     let db = sim.db.clone();
@@ -394,9 +432,13 @@ fn pickup_items(sim: &mut Simulation, player: u16, distance: Fixed) {
 
 // ----- crafting -----
 
-fn hand_craftable(db: &PrototypeDb, categories: &[String], r: RecipeId) -> bool {
+/// Recipes the force has unlocked, indexed by recipe id.
+pub type EnabledRecipes<'a> = &'a [bool];
+
+fn hand_craftable(db: &PrototypeDb, categories: &[String], enabled: EnabledRecipes, r: RecipeId) -> bool {
     let rec = db.recipe(r);
-    categories.contains(&rec.category)
+    enabled.get(r.index()).copied().unwrap_or(true)
+        && categories.contains(&rec.category)
         && rec.ingredients.iter().all(|i| matches!(i.what, ItemOrFluid::Item(_)))
         && rec.results.iter().all(|p| matches!(p.what, ItemOrFluid::Item(_)))
 }
@@ -407,16 +449,18 @@ fn product_count(db: &PrototypeDb, r: RecipeId, item: ItemId) -> u32 {
 
 /// Plans `count` crafts of `recipe` against a virtual inventory, adding intermediate jobs
 /// for missing ingredients first. Returns false if the materials are not available.
+#[allow(clippy::too_many_arguments)]
 fn plan(
     db: &PrototypeDb,
     categories: &[String],
+    enabled: EnabledRecipes,
     recipe: RecipeId,
     count: u32,
     inv: &mut BTreeMap<ItemId, u32>,
     jobs: &mut Vec<CraftJob>,
     depth: u32,
 ) -> bool {
-    if depth > 16 || !hand_craftable(db, categories, recipe) {
+    if depth > 16 || !hand_craftable(db, categories, enabled, recipe) {
         return false;
     }
     let mut consumed = Vec::new();
@@ -433,13 +477,13 @@ fn plan(
         if missing > 0 {
             let sub = db.recipes_producing(item).into_iter().find(|r| {
                 db.recipe(*r).allow_as_intermediate
-                    && hand_craftable(db, categories, *r)
+                    && hand_craftable(db, categories, enabled, *r)
                     && product_count(db, *r, item) > 0
             });
             let Some(sub) = sub else { return false };
             let per = product_count(db, sub, item);
             let crafts = missing.div_ceil(per);
-            if !plan(db, categories, sub, crafts, inv, jobs, depth + 1) {
+            if !plan(db, categories, enabled, sub, crafts, inv, jobs, depth + 1) {
                 return false;
             }
             jobs.last_mut().unwrap().reserved += missing;
@@ -450,10 +494,16 @@ fn plan(
 }
 
 /// How many crafts of `recipe` the inventory allows, including intermediates.
-pub fn max_craftable(db: &PrototypeDb, categories: &[String], inventory: &Inventory, recipe: RecipeId) -> u32 {
+pub fn max_craftable(
+    db: &PrototypeDb,
+    categories: &[String],
+    enabled: EnabledRecipes,
+    inventory: &Inventory,
+    recipe: RecipeId,
+) -> u32 {
     let feasible = |n: u32| {
         let mut inv = inventory.contents();
-        plan(db, categories, recipe, n, &mut inv, &mut Vec::new(), 0)
+        plan(db, categories, enabled, recipe, n, &mut inv, &mut Vec::new(), 0)
     };
     if !feasible(1) {
         return 0;
@@ -472,6 +522,7 @@ pub fn max_craftable(db: &PrototypeDb, categories: &[String], inventory: &Invent
 
 fn queue_craft(sim: &mut Simulation, player: u16, categories: &[String], recipe: RecipeId, count: u32) {
     let db = sim.db.clone();
+    let enabled = sim.research.recipes.clone();
     if sim.players[&player].cheat_mode {
         // Instant and free; "craft all" gives one stack.
         let count = if count == u32::MAX { 0 } else { count };
@@ -485,10 +536,10 @@ fn queue_craft(sim: &mut Simulation, player: u16, categories: &[String], recipe:
     }
     let c = character_mut(sim, player);
     // `u32::MAX` means "as many as possible" (shift-click).
-    let count = if count == u32::MAX { max_craftable(&db, categories, &c.inventory, recipe) } else { count };
+    let count = if count == u32::MAX { max_craftable(&db, categories, &enabled, &c.inventory, recipe) } else { count };
     let mut inv = c.inventory.contents();
     let mut jobs = Vec::new();
-    if count == 0 || !plan(&db, categories, recipe, count, &mut inv, &mut jobs, 0) {
+    if count == 0 || !plan(&db, categories, &enabled, recipe, count, &mut inv, &mut jobs, 0) {
         return;
     }
     for job in &jobs {
@@ -510,7 +561,7 @@ pub(crate) fn update(sim: &mut Simulation, player: u16) {
     craft(sim, player);
     // Close the open window when its entity is gone or out of reach.
     let me = sim.players[&player].character.as_ref().unwrap();
-    let reach = stats(&sim.db, me.proto).reach_distance;
+    let reach = stats(sim, me.proto).reach_distance;
     let me = me.position();
     if let Some(id) = sim.players[&player].opened
         && (sim.entity(id).is_none() || !in_reach(sim, me, id, reach))
@@ -529,7 +580,7 @@ fn walk(sim: &mut Simulation, player: u16) {
     let db = sim.db.clone();
     let c = sim.players[&player].character.as_ref().unwrap();
     let Some(dir) = c.walking else { return };
-    let st = stats(&db, c.proto);
+    let st = stats(sim, c.proto);
     let modifier =
         sim.surface.tile(c.position().tile()).map(|t| db.tile(t).walking_speed_modifier).unwrap_or(Fixed::ONE);
     let speed = st.running_speed * modifier;
@@ -573,7 +624,7 @@ fn mine(sim: &mut Simulation, player: u16) {
     let db = sim.db.clone();
     let c = sim.players[&player].character.as_ref().unwrap();
     let Some(m) = c.mining.clone() else { return };
-    let st = stats(&db, c.proto);
+    let st = stats(sim, c.proto);
     let me = c.position();
 
     let (mining_ticks, results, valid) = match &m.target {
@@ -630,6 +681,9 @@ fn mine(sim: &mut Simulation, player: u16) {
                 .surface
                 .resource(t)
                 .is_some_and(|r| matches!(db.entity(r.proto).data, EntityData::Resource { infinite: true, .. }));
+            if let Some(r) = sim.surface.resource(t) {
+                sim.research_trigger(crate::research::TriggerEvent::Mined(r.proto));
+            }
             sim.surface.deplete(t, 1, infinite);
             if sim.surface.resource(t).is_none() {
                 character_mut(sim, player).mining = None;
@@ -652,10 +706,11 @@ fn mine(sim: &mut Simulation, player: u16) {
 
 fn craft(sim: &mut Simulation, player: u16) {
     let db = sim.db.clone();
+    let speed = stats(sim, sim.players[&player].character.as_ref().unwrap().proto).crafting_speed;
     let c = character_mut(sim, player);
     let Some(job) = c.queue.first() else { return };
     let recipe = db.recipe(job.recipe);
-    c.craft_progress += Fixed::ONE;
+    c.craft_progress += speed;
     if c.craft_progress < recipe.ticks() {
         return;
     }
@@ -695,6 +750,7 @@ fn craft(sim: &mut Simulation, player: u16) {
         c.craft_progress = Fixed::ZERO;
     }
     for (item, give_n, reserved) in outputs {
+        sim.research_trigger(crate::research::TriggerEvent::Crafted(item, give_n + reserved));
         if reserved > 0 {
             let c = character_mut(sim, player);
             if let Some(next) = c

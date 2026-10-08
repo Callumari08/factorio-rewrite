@@ -298,6 +298,7 @@ pub fn build_prototype_db(data: &GameData) -> Result<PrototypeDb> {
             place_result: p.get("place_result").as_str().and_then(|e| names.entities.get(e).copied()),
             fuel,
             sort_index: sort_index[index],
+            durability: (kind == "tool").then(|| fx_or(p.get("durability"), 1.0)),
         });
     }
 
@@ -334,7 +335,8 @@ pub fn build_prototype_db(data: &GameData) -> Result<PrototypeDb> {
             enabled: p.get("enabled").as_bool().unwrap_or(true),
             main_product,
             allow_as_intermediate: p.get("allow_as_intermediate").as_bool().unwrap_or(true),
-            hidden: p.get("hidden").as_bool().unwrap_or(false),
+            // Parameter recipes (for blueprint parametrisation) are never shown or used.
+            hidden: p.get("hidden").as_bool().unwrap_or(false) || p.get("parameter").as_bool().unwrap_or(false),
         });
     }
 
@@ -369,7 +371,130 @@ pub fn build_prototype_db(data: &GameData) -> Result<PrototypeDb> {
         })
         .collect();
 
-    Ok(PrototypeDb::new(items, fluids, recipes, entities, tiles, layer_names))
+    let mut db = PrototypeDb::new(items, fluids, recipes, entities, tiles, layer_names);
+    db.set_technologies(technologies(data, &names)?);
+    Ok(db)
+}
+
+fn technologies(data: &GameData, names: &Names) -> Result<Vec<TechnologyProto>> {
+    let tech_names = sorted_names(data.raw.get("technology").as_table().into_iter().flatten().map(|(n, _)| n.as_str()));
+    let ids: BTreeMap<&str, TechId> =
+        tech_names.iter().enumerate().map(|(i, n)| (n.as_str(), TechId(i as u16))).collect();
+    let mut out = Vec::new();
+    for name in &tech_names {
+        let p = data.prototype("technology", name);
+        let err = |m: String| Error::Prototype { kind: "technology".into(), name: name.clone(), message: m };
+        let item = |n: &str| names.items.get(n).copied().ok_or_else(|| err(format!("unknown item {n}")));
+        let entity = |n: &str| names.entities.get(n).copied().ok_or_else(|| err(format!("unknown entity {n}")));
+
+        let unit = match p.get("unit") {
+            RawValue::Nil => None,
+            u => {
+                let count = match (u.get("count").as_f64(), u.get("count_formula").as_str()) {
+                    (Some(c), _) => ResearchCount::Fixed(c.round() as u64),
+                    (None, Some(f)) => ResearchCount::Formula(CountFormula::parse(f).map_err(err)?),
+                    (None, None) => return Err(err("unit without count".into())),
+                };
+                let mut ingredients = Vec::new();
+                for i in u.get("ingredients").as_array() {
+                    let (n, amount) = match i.get("name").as_str() {
+                        Some(n) => (n, i.get("amount").as_i64().unwrap_or(1)),
+                        None => (i.at(0).as_str().unwrap_or(""), i.at(1).as_i64().unwrap_or(1)),
+                    };
+                    ingredients.push((item(n)?, amount as u32));
+                }
+                Some(ResearchUnit {
+                    count,
+                    ingredients,
+                    time_ticks: (u.get("time").as_f64().unwrap_or(0.0) * 60.0).round() as u32,
+                })
+            }
+        };
+
+        let trigger = match p.get("research_trigger") {
+            RawValue::Nil => None,
+            t => Some(match t.get("type").as_str().unwrap_or("") {
+                "craft-item" => {
+                    let n = t.get("item").as_str().or(t.get("item").get("name").as_str()).unwrap_or("");
+                    ResearchTrigger::CraftItem { item: item(n)?, count: t.get("count").as_i64().unwrap_or(1) as u32 }
+                }
+                "mine-entity" => {
+                    ResearchTrigger::MineEntity { entity: entity(t.get("entity").as_str().unwrap_or(""))? }
+                }
+                "build-entity" => {
+                    let n = t.get("entity").as_str().or(t.get("entity").get("name").as_str()).unwrap_or("");
+                    ResearchTrigger::BuildEntity { entity: entity(n)? }
+                }
+                "craft-fluid" => ResearchTrigger::CraftFluid {
+                    fluid: names
+                        .fluids
+                        .get(t.get("fluid").as_str().unwrap_or(""))
+                        .copied()
+                        .ok_or_else(|| err("unknown fluid".into()))?,
+                    amount: fx_or(t.get("amount"), 0.0),
+                },
+                other => ResearchTrigger::Other(other.to_owned()),
+            }),
+        };
+
+        let mut effects = Vec::new();
+        for e in p.get("effects").as_array() {
+            let kind = e.get("type").as_str().unwrap_or("");
+            effects.push(match kind {
+                "unlock-recipe" => {
+                    let r = e.get("recipe").as_str().unwrap_or("");
+                    TechEffect::UnlockRecipe(
+                        names.recipes.get(r).copied().ok_or_else(|| err(format!("unknown recipe {r}")))?,
+                    )
+                }
+                "give-item" => TechEffect::GiveItem {
+                    item: item(e.get("item").as_str().unwrap_or(""))?,
+                    count: e.get("count").as_i64().unwrap_or(1) as u32,
+                },
+                _ => {
+                    let qualifier = ["ammo_category", "turret_id", "recipe", "entity", "item"]
+                        .iter()
+                        .find_map(|k| e.get(k).as_str())
+                        .unwrap_or("")
+                        .to_owned();
+                    let modifier = match e.get("modifier") {
+                        RawValue::Nil => Fixed::ONE,
+                        m => match m.as_bool() {
+                            Some(b) => Fixed::from_int(b as i64),
+                            None => fx_or(m, 0.0),
+                        },
+                    };
+                    TechEffect::Modifier { kind: kind.to_owned(), qualifier, modifier }
+                }
+            });
+        }
+
+        let mut prerequisites = Vec::new();
+        for pre in strings(p.get("prerequisites")) {
+            prerequisites.push(*ids.get(pre.as_str()).ok_or_else(|| err(format!("unknown prerequisite {pre}")))?);
+        }
+        let level = name.rsplit_once('-').and_then(|(_, n)| n.parse::<u32>().ok()).unwrap_or(1);
+        let max_level = match p.get("max_level") {
+            RawValue::Nil => Some(level),
+            m if m.as_str() == Some("infinite") => None,
+            m => Some(m.as_i64().unwrap_or(level as i64) as u32),
+        };
+        out.push(TechnologyProto {
+            name: name.clone(),
+            prerequisites,
+            unit,
+            trigger,
+            effects,
+            enabled: p.get("enabled").as_bool().unwrap_or(true),
+            hidden: p.get("hidden").as_bool().unwrap_or(false),
+            upgrade: p.get("upgrade").as_bool().unwrap_or(false),
+            essential: p.get("essential").as_bool().unwrap_or(false),
+            level,
+            max_level,
+            order: p.get("order").as_str().unwrap_or("").to_owned(),
+        });
+    }
+    Ok(out)
 }
 
 fn entity_proto(names: &Names, kind: &str, name: &str, p: &RawValue) -> std::result::Result<EntityProto, String> {
@@ -513,6 +638,20 @@ fn entity_proto(names: &Names, kind: &str, name: &str, p: &RawValue) -> std::res
             effectivity: fx_or(p.get("effectivity"), 1.0),
             fluid_box: names.fluid_box(p.get("fluid_box")),
         },
+        "lab" => {
+            let mut inputs = Vec::new();
+            for i in strings(p.get("inputs")) {
+                inputs.push(*names.items.get(&i).ok_or_else(|| format!("unknown lab input {i}"))?);
+            }
+            let energy_usage = usage("energy_usage");
+            EntityData::Lab {
+                inputs,
+                researching_speed: fx_or(p.get("researching_speed"), 1.0),
+                energy_usage,
+                // Like crafting machines, labs drain 1/30 of their usage when idle.
+                energy_source: names.energy_source(p.get("energy_source"), energy_usage.div_int(30)),
+            }
+        }
         "pipe" | "pipe-to-ground" => EntityData::Pipe { fluid_box: names.fluid_box(p.get("fluid_box")) },
         _ => EntityData::Other,
     };

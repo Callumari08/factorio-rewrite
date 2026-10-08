@@ -390,9 +390,9 @@ pub fn electric_buffer_capacity(proto: &EntityProto) -> Energy {
         _ => return Fixed::ZERO,
     };
     match &proto.data {
-        EntityData::MiningDrill { energy_usage, .. } | EntityData::CraftingMachine { energy_usage, .. } => {
-            *energy_usage + drain
-        }
+        EntityData::MiningDrill { energy_usage, .. }
+        | EntityData::CraftingMachine { energy_usage, .. }
+        | EntityData::Lab { energy_usage, .. } => *energy_usage + drain,
         EntityData::Inserter { rotation_speed, extension_speed, energy_per_rotation, energy_per_movement, .. } => {
             *rotation_speed * *energy_per_rotation + *extension_speed * *energy_per_movement + drain
         }
@@ -405,6 +405,7 @@ fn electric_buffer(state: &mut EntityState) -> Option<&mut Energy> {
         EntityState::Drill(d) => &mut d.energy,
         EntityState::Crafter(c) => &mut c.energy,
         EntityState::Inserter(i) => &mut i.energy,
+        EntityState::Lab(l) => &mut l.energy,
         _ => return None,
     };
     match energy {
