@@ -1,10 +1,11 @@
 //! Draws the ground: textures per chunk, composed on the CPU from the game's tile
 //! textures and decoratives, plus resource deposits as sprites.
 //!
-//! Chunks near the camera get a full-resolution texture (32 pixels per tile, the screen
-//! size of a tile at normal zoom); every visible chunk also gets a small one (8 pixels per
-//! tile) used when zoomed out or while the full one is being made. Full textures far from
-//! the view are dropped again.
+//! Chunks in view get a texture at the detail the zoom needs: the game's full 64 px art at
+//! normal zoom and closer (as on its high graphics quality), 32 px when a little zoomed
+//! out, and a small 8 px one that every visible chunk keeps (shown when far out or while
+//! a detailed one is being made). Textures are composed a tile row at a time within a
+//! per-frame budget, and detailed ones out of view are dropped again.
 //!
 //! Tiles use their 1x1, 2x2 and 4x4 pictures (the bigger ones wherever an aligned block is
 //! all the same tile, as the game does). Tile edges use the game's transition masks: where
@@ -24,11 +25,12 @@ use factorio_sim::proto::{EntityData, EntityProtoId, TileId};
 use crate::sprites::Sprites;
 use crate::{Data, Sim, TILE};
 
-/// Pixels per tile of the full and the small chunk textures.
-const HI: u32 = 32;
+/// Pixels per tile of the chunk textures: the game's full art (64), half (32) and small (8).
+const HI: u32 = 64;
+const MID: u32 = 32;
 const LO: u32 = 8;
 /// Above this camera scale (zoomed out), only small textures are drawn.
-const HI_MAX_SCALE: f32 = 2.5;
+const MID_MAX_SCALE: f32 = 2.5;
 /// Time per frame spent composing chunk textures.
 const BUDGET_MS: f64 = 8.0;
 
@@ -50,8 +52,8 @@ pub struct GroundReady(pub HashSet<ChunkPosition>);
 struct ChunkView {
     scanned: bool,
     resources: HashMap<TilePosition, (Entity, EntityProtoId, u32)>,
-    lo: Option<(Entity, Handle<Image>)>,
-    hi: Option<(Entity, Handle<Image>)>,
+    /// Textures by pixels per tile.
+    levels: HashMap<u32, (Entity, Handle<Image>)>,
 }
 
 /// Per pixel density: tile pictures by block size, masks and decoratives.
@@ -73,6 +75,8 @@ struct Terrain {
     placed: HashMap<ChunkPosition, Vec<factorio_sim::mapgen::PlacedDecorative>>,
     files: HashMap<std::path::PathBuf, Option<image::RgbaImage>>,
     frame: u32,
+    /// The texture being composed.
+    job: Option<Job>,
 }
 
 fn load_file<'a>(
@@ -101,7 +105,7 @@ impl Terrain {
                     }
                     let crop = image::imageops::crop_imm(img, v.x, v.y, v.width, v.height).to_image();
                     let n = px * size;
-                    out.push(image::imageops::resize(&crop, n, n, image::imageops::FilterType::Triangle).into_raw());
+                    out.push(image::imageops::resize(&crop, n, n, image::imageops::FilterType::CatmullRom).into_raw());
                 }
             }
             if out.is_empty() && size == 1 {
@@ -167,7 +171,7 @@ impl Terrain {
                                 let (x, y) = (p.x + v * t.size, t.y + r * t.size);
                                 (x + t.size <= img.width() && y + t.size <= img.height()).then(|| {
                                     let crop = image::imageops::crop_imm(&img, x, y, t.size, t.size).to_image();
-                                    image::imageops::resize(&crop, px, px, image::imageops::FilterType::Triangle)
+                                    image::imageops::resize(&crop, px, px, image::imageops::FilterType::CatmullRom)
                                         .into_raw()
                                 })
                             };
@@ -305,7 +309,7 @@ impl Terrain {
                 let cut = |x: u32, y: u32, h: u32, out_h: u32| -> Option<Vec<u8>> {
                     (x + sh.size <= img.width() && y + h <= img.height()).then(|| {
                         let c = image::imageops::crop_imm(&img, x, y, sh.size, h).to_image();
-                        image::imageops::resize(&c, px, out_h, image::imageops::FilterType::Triangle).into_raw()
+                        image::imageops::resize(&c, px, out_h, image::imageops::FilterType::CatmullRom).into_raw()
                     })
                 };
                 let mut pieces = Vec::new();
@@ -352,12 +356,36 @@ impl Terrain {
 }
 
 /// Composes a chunk's ground at `px` pixels per tile.
-fn compose(terrain: &mut Terrain, sim: &Sim, data: &Data, c: ChunkPosition, px: u32) -> Vec<u8> {
+/// A chunk texture being composed a row at a time: tile rows, then shore rows (from the
+/// row above the chunk), then decoratives.
+struct Job {
+    c: ChunkPosition,
+    px: u32,
+    pixels: Vec<u8>,
+    step: i32,
+}
+
+const SHORE_STEP: i32 = CHUNK_SIZE;
+const DECORATIVE_STEP: i32 = 2 * CHUNK_SIZE + 1;
+
+impl Job {
+    fn new(c: ChunkPosition, px: u32) -> Self {
+        let size = CHUNK_SIZE as u32 * px;
+        Job { c, px, pixels: vec![0u8; (size * size * 4) as usize], step: 0 }
+    }
+}
+
+/// Does the next step of a job; true when the texture is finished.
+fn compose_step(terrain: &mut Terrain, sim: &Sim, data: &Data, job: &mut Job) -> bool {
     let db = sim.0.prototypes();
+    let (c, px) = (job.c, job.px);
     let size = CHUNK_SIZE as u32 * px;
-    let mut pixels = vec![0u8; (size * size * 4) as usize];
+    let pixels = &mut job.pixels;
     let first = c.first_tile();
-    for ty in 0..CHUNK_SIZE {
+    let step = job.step;
+    job.step += 1;
+    if step < SHORE_STEP {
+        let ty = step;
         for tx in 0..CHUNK_SIZE {
             let t = TilePosition::new(first.x + tx, first.y + ty);
             let Some(tile) = sim.0.surface.tile(t) else { continue };
@@ -414,7 +442,8 @@ fn compose(terrain: &mut Terrain, sim: &Sim, data: &Data, c: ChunkPosition, px: 
     }
     // Shores: land drawn into neighbouring water through the mask, then the bank on top.
     // Banks reach a tile down, so the row above the chunk is included.
-    for ty in -1..CHUNK_SIZE {
+    if (SHORE_STEP..DECORATIVE_STEP).contains(&step) {
+        let ty = step - SHORE_STEP - 1;
         for tx in 0..CHUNK_SIZE {
             let t = TilePosition::new(first.x + tx, first.y + ty);
             let Some(tile) = sim.0.surface.tile(t) else { continue };
@@ -469,7 +498,7 @@ fn compose(terrain: &mut Terrain, sim: &Sim, data: &Data, c: ChunkPosition, px: 
                 let (x0, y0) = (tx * px as i32, ty * px as i32);
                 for (piece, h) in &chosen {
                     if let Some(bg) = &piece.background {
-                        blend(&mut pixels, bg, px, px * h, x0, y0);
+                        blend(pixels, bg, px, px * h, x0, y0);
                     }
                 }
                 if let Some(land_px) = &land_px {
@@ -491,12 +520,15 @@ fn compose(terrain: &mut Terrain, sim: &Sim, data: &Data, c: ChunkPosition, px: 
                     }
                 }
                 for (piece, h) in &chosen {
-                    blend(&mut pixels, &piece.overlay, px, px * h, x0, y0);
+                    blend(pixels, &piece.overlay, px, px * h, x0, y0);
                 }
             }
         }
     }
 
+    if step < DECORATIVE_STEP {
+        return false;
+    }
     // Decoratives are painted onto the ground, including the parts of neighbouring
     // chunks' decoratives that reach over the edge.
     let names: Vec<String> = sim
@@ -527,7 +559,7 @@ fn compose(terrain: &mut Terrain, sim: &Sim, data: &Data, c: ChunkPosition, px: 
             let k = s.scale as f32 * px as f32 / 32.0;
             let (w, h) = (((s.width as f32 * k).round() as u32).max(1), ((s.height as f32 * k).round() as u32).max(1));
             let crop = image::imageops::crop_imm(img, s.x, s.y, s.width, s.height).to_image();
-            let small = image::imageops::resize(&crop, w, h, image::imageops::FilterType::Triangle);
+            let small = image::imageops::resize(&crop, w, h, image::imageops::FilterType::CatmullRom);
             let ox = (s.shift.0 as f32 * px as f32) as i32 - w as i32 / 2;
             let oy = (s.shift.1 as f32 * px as f32) as i32 - h as i32 / 2;
             Some((small, ox, oy))
@@ -547,7 +579,7 @@ fn compose(terrain: &mut Terrain, sim: &Sim, data: &Data, c: ChunkPosition, px: 
             }
         }
     }
-    pixels
+    true
 }
 
 fn chunk_sprite(
@@ -570,14 +602,9 @@ fn chunk_sprite(
     let first = c.first_tile();
     let world = crate::map_to_world(MapPosition::from_tiles(first.x, first.y))
         + Vec2::new(1.0, -1.0) * (CHUNK_SIZE as f32 * TILE / 2.0);
-    // A hair larger than the chunk so neighbouring quads never leave a gap between them.
     let e = commands
         .spawn((
-            Sprite {
-                image: handle.clone(),
-                custom_size: Some(Vec2::splat(CHUNK_SIZE as f32 * TILE + 0.5)),
-                ..default()
-            },
+            Sprite { image: handle.clone(), custom_size: Some(Vec2::splat(CHUNK_SIZE as f32 * TILE)), ..default() },
             Transform::from_xyz(world.x, world.y, z),
         ))
         .id();
@@ -601,7 +628,14 @@ fn build_chunks(
         Projection::Orthographic(o) => o.scale,
         _ => 1.0,
     };
-    let hi_mode = scale <= HI_MAX_SCALE;
+    // The detail the view needs: the game's full 64 px art at normal zoom and closer.
+    let want = if scale <= 1.05 {
+        HI
+    } else if scale <= MID_MAX_SCALE {
+        MID
+    } else {
+        LO
+    };
     let half = window.size() / 2.0 * scale;
     let centre = ct.translation.truncate();
     let chunk_world = CHUNK_SIZE as f32 * TILE;
@@ -629,45 +663,55 @@ fn build_chunks(
     wanted.sort_by(|a, b| a.0.total_cmp(&b.0));
     let in_view: HashSet<ChunkPosition> = wanted.iter().map(|w| w.1).collect();
 
-    // Small textures first (cheap, fill the view), then full ones near the camera.
-    for (_, c) in &wanted {
-        if started.elapsed().as_secs_f64() * 1000.0 > BUDGET_MS {
-            break;
+    // Work on composing textures: small ones first everywhere (they fill the view fast),
+    // then the needed detail nearest first, a row at a time within the frame budget.
+    while started.elapsed().as_secs_f64() * 1000.0 < BUDGET_MS {
+        if terrain.job.is_none() {
+            let next = wanted
+                .iter()
+                .find(|(_, c)| !terrain.chunks.get(c).is_some_and(|v| v.levels.contains_key(&LO)))
+                .map(|(_, c)| (*c, LO))
+                .or_else(|| {
+                    wanted
+                        .iter()
+                        .find(|(_, c)| !terrain.chunks.get(c).is_some_and(|v| v.levels.contains_key(&want)))
+                        .map(|(_, c)| (*c, want))
+                });
+            match next {
+                Some((c, px)) => terrain.job = Some(Job::new(c, px)),
+                None => break,
+            }
         }
-        if terrain.chunks.get(c).is_some_and(|v| v.lo.is_some()) {
+        let mut job = terrain.job.take().unwrap();
+        if !in_view.contains(&job.c) {
             continue;
         }
-        let pixels = compose(&mut terrain, &sim, &data, *c, LO);
-        let lo = chunk_sprite(&mut commands, &mut images, *c, pixels, LO, -101.0);
-        terrain.chunks.entry(*c).or_default().lo = Some(lo);
-        ready.0.insert(*c);
-    }
-    if hi_mode {
-        for (_, c) in &wanted {
-            if started.elapsed().as_secs_f64() * 1000.0 > BUDGET_MS {
-                break;
-            }
-            if terrain.chunks.get(c).is_some_and(|v| v.hi.is_some() || v.lo.is_none()) {
-                continue;
-            }
-            let pixels = compose(&mut terrain, &sim, &data, *c, HI);
-            let hi = chunk_sprite(&mut commands, &mut images, *c, pixels, HI, -100.0);
-            terrain.chunks.get_mut(c).unwrap().hi = Some(hi);
+        if compose_step(&mut terrain, &sim, &data, &mut job) {
+            let z = -100.0 - (job.px == LO) as i32 as f32;
+            let sprite = chunk_sprite(&mut commands, &mut images, job.c, std::mem::take(&mut job.pixels), job.px, z);
+            terrain.chunks.entry(job.c).or_default().levels.insert(job.px, sprite);
+            ready.0.insert(job.c);
+        } else {
+            terrain.job = Some(job);
         }
     }
-    // Full textures out of view (or when zoomed out) are dropped; small ones are kept.
+
+    // Keep the small textures; drop detail the view no longer needs.
     for (c, view) in terrain.chunks.iter_mut() {
-        if (!hi_mode || !in_view.contains(c))
-            && let Some((e, h)) = view.hi.take()
-        {
-            commands.entity(e).despawn();
-            images.remove(&h);
+        let drop: Vec<u32> =
+            view.levels.keys().copied().filter(|px| *px != LO && (*px != want || !in_view.contains(c))).collect();
+        for px in drop {
+            if let Some((e, h)) = view.levels.remove(&px) {
+                commands.entity(e).despawn();
+                images.remove(&h);
+            }
         }
-        if let Some((e, _)) = &view.lo
-            && let Ok(mut v) = visibility.get_mut(*e)
-        {
-            let show = view.hi.is_none();
-            *v = if show { Visibility::Inherited } else { Visibility::Hidden };
+        // Show the wanted detail if it is ready, else the small texture.
+        let shown = if view.levels.contains_key(&want) { want } else { LO };
+        for (px, (e, _)) in &view.levels {
+            if let Ok(mut v) = visibility.get_mut(*e) {
+                *v = if *px == shown { Visibility::Inherited } else { Visibility::Hidden };
+            }
         }
     }
 }

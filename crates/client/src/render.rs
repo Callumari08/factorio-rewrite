@@ -575,12 +575,22 @@ fn draw_ghost(
     }
 }
 
-fn follow_camera(sim: Res<Sim>, mut cam: Query<&mut Transform, With<Camera2d>>) {
+fn follow_camera(
+    sim: Res<Sim>,
+    mut cam: Query<(&mut Transform, &Projection), With<Camera2d>>,
+    window: Single<&Window, With<bevy::window::PrimaryWindow>>,
+) {
     let Some(c) = sim.0.player(LOCAL_PLAYER).and_then(|p| p.character.as_ref()) else { return };
-    let Ok(mut tf) = cam.single_mut() else { return };
+    let Ok((mut tf, proj)) = cam.single_mut() else { return };
     let p = map_to_world(c.position());
-    tf.translation.x = p.x;
-    tf.translation.y = p.y;
+    // Snapped to whole screen pixels so textures are not resampled between pixels.
+    let scale = match proj {
+        Projection::Orthographic(o) => o.scale,
+        _ => 1.0,
+    };
+    let step = scale / window.scale_factor();
+    tf.translation.x = (p.x / step).round() * step;
+    tf.translation.y = (p.y / step).round() * step;
 }
 
 #[cfg(test)]

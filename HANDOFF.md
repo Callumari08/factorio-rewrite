@@ -29,8 +29,10 @@ Read this first when picking the project up in a new session. See also
   factorio-data --example mapimage -- map.ppm 24 [seed]` renders a map for checking.
   Trees and rocks are generated (`EntityState::Static`, minable, collidable; trees come
   from the `trees` autoplace control). The renderer now only mirrors on-screen entities.
-  Ground (`terrain.rs`): 32 px/tile textures near the camera, 8 px/tile for every visible
-  chunk (used when zoomed out), composed on the CPU within a per-frame time budget. Tile
+  Ground (`terrain.rs`): textures at 64 px/tile (the game's full art, as on its high
+  graphics quality) at normal zoom and closer, 32 px a little zoomed out, and an 8 px one
+  every visible chunk keeps; composed on the CPU a tile row at a time within a per-frame
+  budget. The camera snaps to whole screen pixels so textures are not resampled. Tile
   edges use `variants.transition` masks; shores use the land tiles' `transitions` to
   water (mask, bank overlay, background; two-tile-tall pieces); water and deep water blend
   with a soft ramp. Not done: the animated water shader (`tile-effect` "water"), effect
