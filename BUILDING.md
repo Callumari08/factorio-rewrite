@@ -30,13 +30,17 @@ See [Playing](#3-playing) for the controls.
 ## 3. Playing
 
 You start like Factorio's freeplay: 8 iron plates, a burner mining drill, a stone furnace
-and a pistol, next to patches of iron, copper, coal and stone.
+and a pistol, next to patches of iron, copper, coal and stone. Only the game's starting
+recipes are unlocked. As in Factorio 2.0, smelting 50 iron plates researches Steam power,
+10 copper plates Electronics, and crafting a lab Automation science pack; after that, labs
+research the technologies you queue with `T`.
 
 | Input | Action |
 |-------|--------|
 | `W` `A` `S` `D` | Walk (diagonals too) |
 | Right mouse (hold) | Mine the building or resource under the cursor (also while holding an item) |
 | `E` | Open/close the character window (inventory and crafting) |
+| `T` | Open/close the technology window. Click a technology for details, then Start research (Shift+click puts it at the front of the queue). Right click a queued technology to remove it |
 | Left click on a slot | Pick up / put down / swap the stack |
 | Right click on a slot | Take half / put down one |
 | `Shift`+click / `Ctrl`+click on a slot | Move a stack / all of that item to the open building (or back) |
@@ -50,6 +54,7 @@ and a pistol, next to patches of iron, copper, coal and stone.
 | Mouse wheel | Zoom |
 | `F1` | Sandbox: a full stack of every item (what doesn't fit goes into chests next to you) |
 | `F2` | Toggle cheat mode: crafting is instant and free (like the game's `/cheat`) |
+| `F3` | Research every technology |
 
 Buildings show their slots in their window: click with a held stack to put fuel, ore or
 ingredients in, and click the result slot to take output. Assemblers show a recipe chooser.
@@ -57,7 +62,10 @@ ingredients in, and click the result slot to take output. Assemblers show a reci
 Optional environment variables:
 
 - `FACTORIO_REWRITE_DEMO=1` builds a small burner factory (drills → belt → inserter →
-  furnace → inserter → chest) on the nearest iron patch.
+  furnace → inserter → chest) on the nearest iron patch, plus steam power, an assembler and
+  a lab researching Automation.
+- `FACTORIO_REWRITE_UI=1` (or `power`, `lab`, `tech`) opens a window at start, for screenshots;
+  `FACTORIO_REWRITE_TECH=<name>` selects a technology in the technology window.
 - `FACTORIO_REWRITE_SEED=1234` picks a different map.
 - `FACTORIO_REWRITE_SCREENSHOT=shot.png` (with `FACTORIO_REWRITE_SCREENSHOT_AFTER=10`)
   saves a screenshot after that many seconds and exits.

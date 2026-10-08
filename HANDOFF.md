@@ -8,10 +8,14 @@ Read this first when picking the project up in a new session. See also
 
 - Steps 1, 2 and 2.5 are done. Step 3 item 1 (GUI parity) is done apart from the exact GUI
   skin, drag-spreading items across slots, and the hover info panel.
-- **Next task: step 3 item 2, research.** Technologies from `data.raw.technology`, labs,
-  science packs, research queue, recipe unlocks (`effects` of type `unlock-recipe`),
-  bonuses, the tech tree GUI, and recipes starting locked (`RecipeProto.enabled` is already
-  loaded but ignored). The freeplay start should then match the game's unlocked recipes.
+- Step 3 item 2 (research) is done: `crates/sim/src/research.rs` (force research state,
+  queue, triggers, labs, bonuses), the technology window in `crates/client/src/ui/research.rs`.
+  Bonuses that change existing mechanics are applied (character mining/crafting/running
+  speed, inventory slots, lab speed and productivity, drill productivity); the others
+  (inserter capacity, ammo damage, robots, ...) are stored in `Research::modifiers` for the
+  systems that will use them. Unconfirmed against the game: inserters keep 2 packs per lab
+  slot (`LAB_AUTOMATED_LIMIT`), and trigger counts only start once a technology is available.
+- **Next task: step 3 item 3, sound.**
 - All tests pass: `cargo test --workspace` (sim unit tests, plus gameplay tests in
   `crates/data/tests/` that load the real game and check values such as tick timings and
   throughputs).
@@ -20,9 +24,9 @@ Read this first when picking the project up in a new session. See also
 
 | Crate | What lives there |
 |-------|------------------|
-| `crates/sim` (`factorio-sim`) | All game rules. `world.rs` (Simulation, entities, building, checksum), `player.rs` (character, mining, crafting queue, inputs), `cursor.rs` (cursor stack, slot clicks), `machines.rs` (drills, furnaces/assemblers, inserters), `belt.rs` (lanes, curves, sideload, undergrounds, splitters), `power.rs` (fluid segments, electric networks, power stats), `surface.rs` + `noise.rs` (chunks, map generation), `proto.rs` (typed prototypes, ids), `input.rs` (every player action). |
+| `crates/sim` (`factorio-sim`) | All game rules. `world.rs` (Simulation, entities, building, checksum), `player.rs` (character, mining, crafting queue, inputs), `cursor.rs` (cursor stack, slot clicks), `machines.rs` (drills, furnaces/assemblers, inserters), `belt.rs` (lanes, curves, sideload, undergrounds, splitters), `power.rs` (fluid segments, electric networks, power stats), `research.rs` (technologies, queue, triggers, labs, bonuses), `surface.rs` + `noise.rs` (chunks, map generation), `proto.rs` (typed prototypes, ids), `input.rs` (every player action). |
 | `crates/data` (`factorio-data`) | Finds the install, orders mods, runs the Lua settings/data stages (`datastage.rs`), converts `data.raw` to typed prototypes (`typed.rs`), map-gen settings (`mapgen.rs`), sprite lookups (`sprite.rs`), locale names (`locale.rs`). |
-| `crates/client` (`factorio-client`, binary `factorio-rewrite`) | Bevy app: `main.rs` (setup, fixed 60 Hz tick), `controls.rs` (keys/mouse → inputs), `render.rs` (entities, layers, belts, items, ghost), `terrain.rs`, `ui.rs` (all GUI), `chart.rs` (power graph), `demo.rs`. |
+| `crates/client` (`factorio-client`, binary `factorio-rewrite`) | Bevy app: `main.rs` (setup, fixed 60 Hz tick), `controls.rs` (keys/mouse → inputs), `render.rs` (entities, layers, belts, items, ghost), `terrain.rs`, `ui.rs` (all GUI; `ui/research.rs` the technology window and lab panel), `chart.rs` (power graph), `demo.rs`. |
 
 ## Conventions (keep these)
 
@@ -40,7 +44,7 @@ Read this first when picking the project up in a new session. See also
 
 ## Known gaps
 
-Research (next); exact GUI skin; tile transitions, lights, smoke; Factorio's noise-expression
+Sound (next); exact GUI skin; the technology window is a grid, not the game's tree view; tile transitions, lights, smoke; Factorio's noise-expression
 map generation, trees, rocks, cliffs, enemies, oil; inserters chasing belt items and real pole
 wiring; fluid recipes; trains, robots, circuits, combat; save/load; main menu; rebindable
 controls; sound; data-stage `pairs()` order and `math.random` are not identical to the game.

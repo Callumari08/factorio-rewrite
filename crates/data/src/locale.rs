@@ -123,6 +123,31 @@ impl Locale {
         }
     }
 
+    /// Display name of a technology and whether a level number belongs after it. Levelled
+    /// technologies (`mining-productivity-3`) share the name of their base (`mining-productivity`).
+    pub fn technology_name(&self, data: &GameData, name: &str) -> (String, bool) {
+        let p = data.prototype("technology", name);
+        if let Some(s) = self.named(p, "technology-name", name) {
+            return (s, false);
+        }
+        if let Some((base, level)) = name.rsplit_once('-')
+            && level.parse::<u32>().is_ok()
+            && let Some(s) = self.get(&format!("technology-name.{base}"))
+        {
+            return (self.substitute(s), true);
+        }
+        (prettify(name), false)
+    }
+
+    /// A technology's description, falling back to its base name for levelled ones.
+    pub fn technology_description(&self, name: &str) -> Option<String> {
+        self.description("technology", name).or_else(|| {
+            let (base, level) = name.rsplit_once('-')?;
+            level.parse::<u32>().ok()?;
+            self.description("technology", base)
+        })
+    }
+
     pub fn item_group_name(&self, name: &str) -> String {
         self.get(&format!("item-group-name.{name}")).map(str::to_owned).unwrap_or_else(|| prettify(name))
     }

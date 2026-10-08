@@ -15,6 +15,9 @@ use factorio_sim::research::Research;
 use factorio_sim::world::{EntityId, EntityState};
 
 use crate::controls::{MouseWorld, UiState};
+use factorio_sim::proto::TechId;
+
+mod research;
 use crate::sprites::Sprites;
 use crate::{Data, LOCAL_PLAYER, PendingInputs, Sim};
 
@@ -23,7 +26,7 @@ pub struct UiPlugin;
 impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(FrameTimeDiagnosticsPlugin::default())
-            .add_systems(Startup, (load_names, setup).chain())
+            .add_systems(Startup, (load_names, setup, research::setup).chain())
             .add_systems(
                 Update,
                 (
@@ -33,6 +36,9 @@ impl Plugin for UiPlugin {
                     quickbar,
                     queue,
                     window,
+                    research::scroll,
+                    research::window,
+                    research::hud,
                     hover_highlight,
                     tooltip,
                     cursor_icon,
@@ -70,6 +76,11 @@ pub struct Names {
     recipes: HashMap<RecipeId, String>,
     entities: HashMap<factorio_sim::proto::EntityProtoId, String>,
     groups: HashMap<String, String>,
+    /// Technology names and whether the level is shown after them.
+    techs: HashMap<TechId, (String, bool)>,
+    tech_descriptions: HashMap<TechId, String>,
+    /// `modifier-description` strings by key, e.g. `bullet-damage-bonus`.
+    modifiers: HashMap<String, String>,
     /// Crafting menu: groups (name, icon item group) with rows of recipes per subgroup.
     menu: Vec<MenuGroup>,
 }
@@ -120,6 +131,10 @@ enum UiButton {
     ChangeRecipe,
     ChartRange(usize),
     QueueCancel(u32),
+    SelectTech(TechId),
+    QueueTech(TechId),
+    DequeueTech(TechId),
+    OpenTech,
 }
 
 /// What the tooltip should describe when this element is hovered.
@@ -127,6 +142,7 @@ enum UiButton {
 enum Tip {
     Item(ItemId),
     Recipe(RecipeId),
+    Tech(TechId),
     Text(String),
 }
 
@@ -159,6 +175,28 @@ fn load_names(mut commands: Commands, sim: Res<Sim>, data: Res<Data>, assets: Re
     }
     for e in db.entity_ids() {
         names.entities.insert(e, locale.entity_name(d, &db.entity(e).name));
+    }
+
+    for t in db.technology_ids() {
+        let name = &db.technology(t).name;
+        names.techs.insert(t, locale.technology_name(d, name));
+        if let Some(desc) = locale.technology_description(name) {
+            names.tech_descriptions.insert(t, desc);
+        }
+        for e in &db.technology(t).effects {
+            if let factorio_sim::proto::TechEffect::Modifier { kind, qualifier, .. } = e {
+                for key in [
+                    kind.clone(),
+                    format!("{qualifier}-damage-bonus"),
+                    format!("{qualifier}-shooting-speed-bonus"),
+                    format!("{qualifier}-attack-bonus"),
+                ] {
+                    if let Some(text) = locale.get(&format!("modifier-description.{key}")) {
+                        names.modifiers.insert(key, text.to_owned());
+                    }
+                }
+            }
+        }
     }
 
     // Crafting menu layout: item groups in order, a row per subgroup.
@@ -340,6 +378,8 @@ fn clicks(
     mut pending: ResMut<PendingInputs>,
     mut local: ResMut<Local_>,
     mut chart: ResMut<crate::chart::Chart>,
+    mut tech: ResMut<research::TechUi>,
+    mut ui: ResMut<UiState>,
 ) {
     let button = if mouse.just_pressed(MouseButton::Left) {
         SimButton::Left
@@ -378,6 +418,15 @@ fn clicks(
         (UiButton::ChangeRecipe, _) => local.choosing_recipe = !local.choosing_recipe,
         (UiButton::ChartRange(r), _) => chart.range = r,
         (UiButton::QueueCancel(i), _) => pending.push(InputAction::CancelCraft { index: i }),
+        (UiButton::SelectTech(t), SimButton::Left) => tech.selected = Some(t),
+        // Right click on a queued technology removes it, as in the game's queue.
+        (UiButton::SelectTech(t), SimButton::Right) => pending.push(InputAction::DequeueResearch(t)),
+        (UiButton::QueueTech(t), _) => pending.push(InputAction::QueueResearch { tech: t, front: shift }),
+        (UiButton::DequeueTech(t), _) => pending.push(InputAction::DequeueResearch(t)),
+        (UiButton::OpenTech, _) => {
+            ui.tech_open = true;
+            tech.selected = sim.0.research().current();
+        }
     }
 }
 
@@ -411,7 +460,7 @@ fn hud(
         lines.push(format!("{}  ({} remaining)", names.entity(r.proto), r.amount));
     }
     lines.push(
-        "E inventory  |  Q clear/pick  |  R rotate  |  F pick up  |  Ctrl+click fast transfer  |  F1 all items  |  F2 cheat mode"
+        "E inventory  |  T technologies  |  Q clear/pick  |  R rotate  |  F pick up  |  Ctrl+click fast transfer  |  F1 all items  |  F2 cheat mode  |  F3 research all"
             .into(),
     );
     texts.p0().0 = lines.join("\n");
@@ -873,6 +922,18 @@ fn status(sim: &Sim, id: EntityId) -> (&'static str, Color) {
                 ("Waiting for source items", yellow)
             }
         }
+        EntityState::Lab(l) => {
+            let r = sim.0.research();
+            if r.current().is_none() {
+                ("No research in progress", yellow)
+            } else if l.working {
+                ("Working", green)
+            } else if no_power(&l.energy) {
+                (fuel_word, red)
+            } else {
+                ("Missing science packs", yellow)
+            }
+        }
         EntityState::Fluid(f) => {
             if f.last_power.is_positive() {
                 ("Working", green)
@@ -1017,6 +1078,7 @@ fn entity_panel(
             fuel_slots(p, ctx, &f.energy);
         }
         EntityState::Pole => network_window(p, ctx, sim, id, chart, images),
+        EntityState::Lab(l) => research::lab_panel(p, ctx, names, proto, l),
         _ => {}
     }
 }
@@ -1169,6 +1231,16 @@ fn tooltip(
     commands.entity(root).despawn_related::<Children>();
     commands.entity(root).with_children(|p| match tip {
         Tip::Text(t) => ctx.text(p, t, 14.0, TEXT),
+        Tip::Tech(t) => {
+            let r = sim.0.research();
+            ctx.heading(p, names.tech(r, t));
+            if let Some(unit) = &db.technology(t).unit {
+                let count = unit.count_for(r.level[t.index()]);
+                let packs: Vec<String> = unit.ingredients.iter().map(|(i, _)| names.item(*i).to_owned()).collect();
+                ctx.text(p, format!("{count} × ({})", packs.join(", ")), 14.0, TEXT);
+            }
+            ctx.text(p, "Click: details   Right click: remove from queue", 12.0, Color::srgb(0.6, 0.6, 0.6));
+        }
         Tip::Item(i) => {
             ctx.heading(p, names.item(i).to_owned());
             let item = db.item(i);

@@ -69,6 +69,7 @@ fn build_power(sim: &mut Simulation) {
     else {
         return;
     };
+    let lab = id("lab");
     let pos = |e, x, y, d| db.entity(e).position_for_tile(TilePosition::new(x, y), d);
     let mut spot = None;
     'search: for r in 0..60i32 {
@@ -80,7 +81,10 @@ fn build_power(sim: &mut Simulation) {
                 let fits = sim.can_place(pump, pos(pump, x, y, Direction::NORTH), Direction::NORTH).is_ok()
                     && sim.can_place(boiler, pos(boiler, x, y + 1, Direction::EAST), Direction::EAST).is_ok()
                     && sim.can_place(engine, pos(engine, x + 2, y + 1, Direction::EAST), Direction::EAST).is_ok()
-                    && sim.can_place(asm, pos(asm, x + 2, y + 5, Direction::NORTH), Direction::NORTH).is_ok();
+                    && sim.can_place(asm, pos(asm, x + 2, y + 5, Direction::NORTH), Direction::NORTH).is_ok()
+                    && lab.is_none_or(|l| {
+                        sim.can_place(l, pos(l, x + 5, y + 5, Direction::NORTH), Direction::NORTH).is_ok()
+                    });
                 if fits {
                     spot = Some((x, y));
                     break 'search;
@@ -99,6 +103,20 @@ fn build_power(sim: &mut Simulation) {
         place(pole, x + 3, y + 4, Direction::NORTH),
         place(asm, x + 2, y + 5, Direction::NORTH),
     ]);
+    if let (Some(lab), Some(pack)) = (lab, db.item_id("automation-science-pack")) {
+        sim.step(&[place(lab, x + 5, y + 5, Direction::NORTH)]);
+        let at = MapPosition::tile_center(TilePosition::new(x + 6, y + 6));
+        sim.step(&[PlayerInput::new(0, InputAction::CheatInsert { position: at, item: pack, count: 10 })]);
+        // Research what the burner phase would have unlocked, and start Automation.
+        for name in ["steam-power", "electronics", "automation-science-pack"] {
+            if let Some(t) = db.technology_id(name) {
+                sim.finish_research(t);
+            }
+        }
+        if let Some(t) = db.technology_id("automation") {
+            sim.step(&[PlayerInput::new(0, InputAction::QueueResearch { tech: t, front: false })]);
+        }
+    }
     let (Some(coal), Some(plate), Some(gear)) =
         (db.item_id("coal"), db.item_id("iron-plate"), db.recipe_id("iron-gear-wheel"))
     else {

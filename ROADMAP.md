@@ -29,11 +29,15 @@ Each step ends with a playtest. Feedback from it becomes a ".5" step before the 
 - Per-building power readouts; electric network window with power graph.
 - Visual pass: all sprite layers, shadows, working animations, furnace fire.
 
-## Next: Step 3, in order
-
+### Step 3, so far
 1. **GUI parity.** Factorio's inventory, crafting, entity and character windows, quickbar,
    cursor stack, tooltips, and the same mouse and keyboard behaviour.
-2. **Research.** Technology tree, labs, science packs, recipe unlocks and bonuses.
+2. **Research.** Technologies from the game data, labs and science packs, the research
+   queue, Factorio 2.0 research triggers, recipe unlocks, bonuses, infinite technologies
+   and the technology window.
+
+## Next: the rest of step 3, in order
+
 3. **Sound.** Game sounds from the install: building, mining, crafting, machine working
    loops, ambient sounds, UI sounds, with the game's falloff and volume settings.
 4. **Map generation parity.** Implement Factorio's noise-expression language so maps

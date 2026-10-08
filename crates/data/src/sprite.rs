@@ -413,6 +413,8 @@ pub fn entity_layers(data: &GameData, name: &str, dir: usize, t: u64, working: b
     let gs = proto.get("graphics_set");
     let root = if kind == "generator" {
         proto.get(if dir % 2 == 1 { "horizontal_animation" } else { "vertical_animation" })
+    } else if kind == "lab" {
+        proto.get(if working { "on_animation" } else { "off_animation" })
     } else {
         [
             gs.get("animation"),

@@ -128,6 +128,14 @@ impl Research {
         out.push(t);
     }
 
+    /// The first technology in `t`'s missing prerequisite chain (or `t` itself) that labs
+    /// cannot research because it needs a trigger.
+    pub fn blocking_trigger(&self, db: &PrototypeDb, t: TechId) -> Option<TechId> {
+        let mut chain = Vec::new();
+        self.missing_chain(db, t, &mut chain);
+        chain.into_iter().find(|c| db.technology(*c).unit.is_none())
+    }
+
     /// Adds a technology to the end (or the front) of the queue, with any prerequisites
     /// that are not researched or queued yet, as the game does.
     pub fn enqueue(&mut self, db: &PrototypeDb, t: TechId, front: bool) -> Result<(), QueueError> {

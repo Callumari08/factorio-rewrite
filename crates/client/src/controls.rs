@@ -29,6 +29,8 @@ pub struct MouseWorld(pub Option<MapPosition>);
 pub struct UiState {
     /// The character window (E). Entity windows are opened through the simulation.
     pub inventory_open: bool,
+    /// The technology window (T).
+    pub tech_open: bool,
     /// True while the pointer is over a UI panel.
     pub pointer_over_ui: bool,
     pub status: String,
@@ -47,15 +49,23 @@ fn open_from_env(sim: Res<Sim>, mut ui: ResMut<UiState>, mut pending: ResMut<Pen
     if std::env::var_os("FACTORIO_REWRITE_UI").is_none() {
         return;
     }
+    // `FACTORIO_REWRITE_UI=tech` opens the technology window instead.
+    if std::env::var("FACTORIO_REWRITE_UI").is_ok_and(|v| v == "tech") {
+        ui.tech_open = true;
+        return;
+    }
     ui.inventory_open = true;
-    // `FACTORIO_REWRITE_UI=power` opens a pole (the network window) instead of a machine.
+    // `FACTORIO_REWRITE_UI=power` opens a pole (the network window) instead of a machine,
+    // `lab` a lab.
     let power = std::env::var("FACTORIO_REWRITE_UI").is_ok_and(|v| v == "power");
+    let lab = std::env::var("FACTORIO_REWRITE_UI").is_ok_and(|v| v == "lab");
     let at = sim
         .0
         .entities()
         .find(|(_, e)| match e.state {
             factorio_sim::world::EntityState::Pole => power,
-            factorio_sim::world::EntityState::Crafter(_) => !power,
+            factorio_sim::world::EntityState::Lab(_) => lab,
+            factorio_sim::world::EntityState::Crafter(_) => !power && !lab,
             _ => false,
         })
         .map(|(_, e)| e.position);
@@ -126,7 +136,15 @@ fn keyboard(
     }
 
     let opened = sim.0.player(LOCAL_PLAYER).and_then(|p| p.opened).is_some();
+    if keys.just_pressed(KeyCode::KeyT) {
+        ui.tech_open = !ui.tech_open;
+        if ui.tech_open {
+            ui.inventory_open = false;
+            pending.push(InputAction::OpenEntity(None));
+        }
+    }
     if keys.just_pressed(KeyCode::KeyE) {
+        ui.tech_open = false;
         if opened || ui.inventory_open {
             ui.inventory_open = false;
             pending.push(InputAction::OpenEntity(None));
@@ -136,6 +154,7 @@ fn keyboard(
     }
     if keys.just_pressed(KeyCode::Escape) {
         ui.inventory_open = false;
+        ui.tech_open = false;
         pending.push(InputAction::OpenEntity(None));
     }
     let held = held_item(&sim);
@@ -186,6 +205,10 @@ fn keyboard(
         let on = !sim.0.player(LOCAL_PLAYER).is_some_and(|p| p.cheat_mode);
         pending.push(InputAction::SetCheatMode(on));
         ui.status = if on { "Cheat mode on: crafting is instant and free" } else { "Cheat mode off" }.into();
+    }
+    if keys.just_pressed(KeyCode::F3) {
+        pending.push(InputAction::CheatResearchAll);
+        ui.status = "Researched every technology".into();
     }
     if keys.just_pressed(KeyCode::F1) {
         pending.push(InputAction::CheatAllItems);

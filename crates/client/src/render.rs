@@ -72,6 +72,7 @@ fn is_working(state: &EntityState) -> bool {
         EntityState::Drill(d) => d.working,
         EntityState::Crafter(c) => c.crafting,
         EntityState::Fluid(f) => f.last_power.is_positive(),
+        EntityState::Lab(l) => l.working,
         _ => false,
     }
 }
