@@ -161,7 +161,7 @@ pub(super) fn tooltip_contents(p: &mut ChildSpawnerCommands, ctx: &mut Ctx, name
                 for (pack, amount) in &unit.ingredients {
                     ctx.tip_amount(p, Some(*pack), (amount * count as u32).to_string(), names.item(*pack).to_owned());
                 }
-                ctx.tip_kv(p, "Time", format!("{} s", unit.time_ticks as u64 * count as u64 / 60));
+                ctx.tip_kv(p, "Time", format!("{} s", unit.time_ticks as u64 * count / 60));
             }
         }
         Tip::Item(i) => {
