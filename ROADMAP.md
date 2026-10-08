@@ -30,19 +30,42 @@ Each step ends with a playtest. Feedback from it becomes a ".5" step before the 
 - Visual pass: all sprite layers, shadows, working animations, furnace fire.
 
 ### Step 3, so far
-1. **GUI parity.** Factorio's inventory, crafting, entity and character windows, quickbar,
-   cursor stack, tooltips, and the same mouse and keyboard behaviour.
 2. **Research.** Technologies from the game data, labs and science packs, the research
    queue, Factorio 2.0 research triggers, recipe unlocks, bonuses, infinite technologies
-   and the technology window.
+   and a first technology window.
 3. **Sound.** Game sounds from the install: machine working loops, building, mining,
-   crafting, research, footsteps, GUI and inventory sounds, water and wind ambience, and
-   music, with the player's own Factorio volume settings.
+   crafting, research, footsteps, GUI and inventory sounds, zoom-dependent ambience
+   (wind/base ambience crossfade), music, and a volume panel starting from the player's
+   Factorio settings.
+
+## In progress
+
+4. **Map generation parity.** Done: the noise-expression language (parser, compiler,
+   evaluator, spot noise), tiles, lakes, ores, trees, rocks, decoratives, cliffs, tile
+   transitions. Playtest fixes in progress: full-resolution ground and no seams, terrain
+   generated ahead of the zoomed-out view, water rendering and shores, ore amounts and
+   starting patches checked against the default settings. Later: a closer match to the
+   game's terrain look (basis noise and multioctave calibration).
+1. **GUI parity (reopened; first pass only).** Checklist, each compared side by side with
+   the game:
+   - [ ] GUI skin from the game's own sprite sheets (`__core__/graphics/gui*`): frames,
+         title bars, inner panels, slot buttons, tabs, scrollbars, buttons, progress bars.
+   - [ ] Exact window layouts and sizes at the default UI scale: character window
+         (character, inventory, crafting with item-group tabs and subgroup rows, logistics
+         and armor sections), entity windows, quickbar, crafting queue, research HUD.
+   - [ ] Fonts and text styles as the game's GUI styles (sizes, colours, shadows).
+   - [ ] Tooltips laid out as in the game (recipe/item/entity tooltips with icons,
+         ingredients, totals, crafting time, "Ctrl+click" hints).
+   - [ ] Entity hover info panel (right side "selected entity" info).
+   - [ ] Drag-spreading items across slots with the cursor stack (left and right drag).
+   - [ ] Technology tree view as in 2.0 (graph of technologies, zoom, search) instead of
+         the grid, with the game's tech slot styles and queue.
+   - [ ] Slot details: count fonts, red/green slot states, filters, hover highlight,
+         item quality/progress bars on slots.
+   - [ ] Minimap and map view (M), alerts panel position, shortcut bar.
+   - [ ] Keyboard and mouse behaviour audit against the game's default controls.
 
 ## Next: the rest of step 3, in order
-4. **Map generation parity.** Implement Factorio's noise-expression language so maps
-   generate from the real `autoplace` data: terrain, resources, trees, rocks, cliffs,
-   decoratives, tile transitions.
 5. **Inserters and poles.** Inserters reaching for moving belt items, stack bonuses, filter
    inserters; electric pole wiring as in the game (nearest-pole rules, copper wire).
 6. **Fluids and oil.** Full fluid system, pumpjacks, oil refining, chemical plants, fluid
