@@ -74,7 +74,12 @@ impl Skin {
     pub fn color(&self, style: &str, key: &str) -> Option<Color> {
         let c = self.prop(style, key)?;
         let ch = |i: usize, k: &str| c.at(i).as_f64().or(c.get(k).as_f64());
-        let (r, g, b) = (ch(0, "r")?, ch(1, "g")?, ch(2, "b")?);
+        // Missing channels are 0 (`{r = 1}` is red).
+        let (r, g, b) = (ch(0, "r"), ch(1, "g"), ch(2, "b"));
+        if r.is_none() && g.is_none() && b.is_none() {
+            return None;
+        }
+        let (r, g, b) = (r.unwrap_or(0.0), g.unwrap_or(0.0), b.unwrap_or(0.0));
         let a = ch(3, "a").unwrap_or(if r > 1.0 || g > 1.0 || b > 1.0 { 255.0 } else { 1.0 });
         let big = r > 1.0 || g > 1.0 || b > 1.0 || a > 1.0;
         let k = if big { 255.0 } else { 1.0 };
@@ -186,6 +191,10 @@ pub struct Looks {
     pub line: Option<(Handle<Image>, Rect)>,
     /// `production_progressbar`'s bar colour.
     pub production_bar_color: Color,
+    /// `entity_frame_filler`'s row picture.
+    pub entity_filler: Option<Slice>,
+    /// `burning_progressbar`'s (fuel left).
+    pub burning_bar_color: Color,
     pub shallow: Slice,
     pub slot: ButtonLook,
     pub inventory_slot: ButtonLook,
@@ -245,6 +254,8 @@ fn resolve(mut commands: Commands, skin: Res<Skin>, data: Res<Data>, assets: Res
         deep_in_shallow: get("deep_frame_in_shallow_frame", "graphical_set").unwrap_or_else(fallback),
         line,
         production_bar_color: skin.color("production_progressbar", "color").unwrap_or(Color::srgb_u8(43, 227, 39)),
+        entity_filler: skin.prop("entity_frame_filler", "graphical_set").and_then(|g| skin.element(g, &data, &assets)),
+        burning_bar_color: skin.color("burning_progressbar", "color").unwrap_or(Color::srgb(1.0, 0.0, 0.0)),
         deep: get("inside_deep_frame", "graphical_set").unwrap_or_else(fallback),
         shallow: get("inside_shallow_frame", "graphical_set").unwrap_or_else(fallback),
         slot: look(states("slot_button")),

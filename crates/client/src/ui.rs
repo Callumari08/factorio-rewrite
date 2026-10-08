@@ -1206,6 +1206,7 @@ fn status(sim: &Sim, id: EntityId) -> (&'static str, Color) {
                 ("Idle", yellow)
             }
         }
+        EntityState::Container(_) => ("Normal", green),
         _ => ("", TEXT),
     }
 }
@@ -1250,12 +1251,30 @@ fn entity_panel(
         entity_preview(p, ctx, sim, id, checker);
     }
     let fuel_slots = |p: &mut ChildSpawnerCommands, ctx: &mut Ctx, energy: &factorio_sim::energy::EnergyState| {
+        // As in the game: the fuel slots, then a red bar of the fuel left burning.
         if let Some(b) = energy.burner() {
-            ctx.text(p, "Fuel", 14.0, HEADING);
-            ctx.inventory(p, &b.fuel, 10, |i| SlotRef::Opened(EntityInventory::Fuel, i as u16));
-            if !b.burnt.slots().is_empty() {
-                ctx.inventory(p, &b.burnt, 10, |i| SlotRef::Opened(EntityInventory::BurntResult, i as u16));
-            }
+            let db = ctx.db;
+            let left = b
+                .currently_burning
+                .and_then(|i| db.item(i).fuel.as_ref())
+                .map(|f| (b.remaining.to_f64_lossy() / f.value.to_f64_lossy().max(1e-9)).clamp(0.0, 1.0))
+                .unwrap_or(0.0);
+            p.spawn(Node {
+                flex_direction: FlexDirection::Row,
+                column_gap: Val::Px(12.0),
+                align_items: AlignItems::Center,
+                ..default()
+            })
+            .with_children(|r| {
+                let n = b.fuel.slots().len().max(1);
+                ctx.inventory(r, &b.fuel, n, |i| SlotRef::Opened(EntityInventory::Fuel, i as u16));
+                if !b.burnt.slots().is_empty() {
+                    let n = b.burnt.slots().len();
+                    ctx.inventory(r, &b.burnt, n, |i| SlotRef::Opened(EntityInventory::BurntResult, i as u16));
+                }
+                r.spawn(Node { flex_grow: 1.0, flex_direction: FlexDirection::Column, ..default() })
+                    .with_children(|c| progress_bar(c, left, looks().burning_bar_color));
+            });
         }
     };
     match &e.state {
@@ -1317,7 +1336,9 @@ fn entity_panel(
                 recipe_chooser(p, ctx, names, proto);
                 return;
             }
-            separator(p);
+            if !c.furnace {
+                separator(p);
+            }
             // Ingredients, progress and products in one row.
             let ticks = c.recipe.map(|r| db.recipe(r).ticks().to_f64_lossy()).unwrap_or(1.0);
             let fraction = (c.progress.to_f64_lossy() / ticks).clamp(0.0, 1.0);
@@ -1361,6 +1382,41 @@ fn entity_panel(
         EntityState::Lab(l) => research::lab_panel(p, ctx, names, proto, l),
         _ => {}
     }
+    if !matches!(e.state, EntityState::Pole) {
+        entity_filler(p);
+    }
+}
+
+/// The game's `entity_frame_filler`: the striped rows filling the rest of an entity panel.
+fn entity_filler(p: &mut ChildSpawnerCommands) {
+    let Some(rows) = looks().entity_filler.clone() else { return };
+    // Takes only the height left over: the rows are absolutely placed so they never add
+    // to the panel's size, and clipped to what is left.
+    p.spawn(Node {
+        flex_grow: 1.0,
+        margin: UiRect { top: Val::Px(-8.0), left: Val::Px(-12.0), right: Val::Px(-12.0), ..default() },
+        overflow: Overflow::clip(),
+        ..default()
+    })
+    .with_children(|f| {
+        f.spawn(Node {
+            position_type: PositionType::Absolute,
+            left: Val::Px(0.0),
+            right: Val::Px(0.0),
+            top: Val::Px(8.0),
+            flex_direction: FlexDirection::Column,
+            row_gap: Val::Px(16.0),
+            ..default()
+        })
+        .with_children(|r| {
+            for _ in 0..24 {
+                r.spawn((
+                    Node { height: Val::Px(24.0), flex_shrink: 0.0, ..default() },
+                    crate::gui_skin::node_image(&rows),
+                ));
+            }
+        });
+    });
 }
 
 fn recipe_chooser(
