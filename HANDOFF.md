@@ -33,7 +33,11 @@ Read this first when picking the project up in a new session. See also
   shores use the generic land mask, not the game's dedicated shore sprites yet.
   Decoratives are generated on demand by the client (`Surface::decoratives`, not game
   state) and painted into the chunk ground textures; building does not remove them yet.
-  Still to do: cliffs, water shore sprites, fish, crude oil, enemies.
+  Cliffs: marching squares over `cliff_elevation` on the cliff's 4x4 grid where
+  `cliffiness` > 0.5, stored per chunk (not in the entity map, so they need no
+  footprint tiles); `Simulation::cliff_in` blocks walking and building. Cliff explosives
+  are not implemented. The left-hand-high orientation convention is inferred.
+  Still to do: water shore sprites, fish, crude oil, enemies.
   Factorio's basis noise algorithm is not public; ours is gradient noise scaled to about
   -1..1 (`BASIS_AMPLITUDE`), and `multioctave_noise`'s loudness (`MULTIOCTAVE_GAIN` = 3) is
   calibrated so lakes cover 10-20% of the map, so maps follow the game's rules but not its

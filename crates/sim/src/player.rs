@@ -162,6 +162,9 @@ pub(crate) fn character_fits(sim: &Simulation, proto: EntityProtoId, at: MapPosi
             }
         }
     }
+    if sim.cliff_in(&area) {
+        return false;
+    }
     for id in sim.entities_in(area) {
         let e = &sim.entities[&id];
         let ep = db.entity(e.proto);

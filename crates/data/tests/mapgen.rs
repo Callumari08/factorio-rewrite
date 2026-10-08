@@ -61,3 +61,26 @@ fn trees_and_rocks_are_generated_as_minable_entities() {
     let results = &db.entity(tree.proto).minable.as_ref().unwrap().results;
     assert!(results.iter().any(|r| r.what == ItemOrFluid::Item(wood)));
 }
+
+#[test]
+fn cliffs_follow_contours() {
+    use factorio_sim::map::{Area, MapPosition};
+    let Ok(config) = factorio_data::Config::load() else { return };
+    let Ok(data) = factorio_data::load_game_data(&config) else { return };
+    let db = factorio_data::typed::build_prototype_db(&data).unwrap();
+    let mut s = Surface::new(factorio_data::mapgen::planet_mapgen(&data, &db, 1));
+    for y in -12..-6 {
+        for x in -12..-6 {
+            s.ensure_chunk(ChunkPosition { x, y });
+        }
+    }
+    let area =
+        Area { left_top: MapPosition::from_tiles(-384, -384), right_bottom: MapPosition::from_tiles(-192, -192) };
+    let cliffs = s.cliffs_near(area);
+    assert!(cliffs.len() > 20, "{} cliffs", cliffs.len());
+    // Most cliffs continue into a neighbour cell; runs end where cliffiness stops.
+    let cliff = db.entity(s.cliff_entity().unwrap());
+    let factorio_sim::proto::EntityData::Cliff { orientations, .. } = &cliff.data else { panic!() };
+    let ends = cliffs.iter().filter(|c| orientations[c.orientation as usize].name.contains("none")).count();
+    assert!(ends * 2 < cliffs.len(), "{ends} of {} cliffs are ends", cliffs.len());
+}

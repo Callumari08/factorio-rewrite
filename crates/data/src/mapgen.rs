@@ -322,7 +322,25 @@ pub fn noise_mapgen(data: &GameData, db: &PrototypeDb, planet: &str, seed: u64) 
         ));
     }
     decoratives.sort_by(|a, b| a.0.cmp(&b.0));
+
+    // Cliffs from the planet's cliff settings.
+    let cliffs = cliffs.get("name").as_str().and_then(|name| db.entity_id(name)).and_then(|e| {
+        let proto = db.entity(e);
+        let factorio_sim::proto::EntityData::Cliff { orientations, grid_size, grid_offset } = &proto.data else {
+            return None;
+        };
+        let sub = factorio_sim::map::SUBTILES_PER_TILE;
+        Some(factorio_sim::mapgen::CliffAutoplace {
+            entity: e,
+            orientations: orientations.iter().map(|o| o.name.clone()).collect(),
+            variations: orientations.iter().map(|o| o.variations).collect(),
+            grid_size: [grid_size[0] / sub, grid_size[1] / sub],
+            grid_offset_subtiles: *grid_offset,
+            allowed_tiles: db.tile_ids().map(|t| !db.tile(t).collision_mask.collides(&proto.collision_mask)).collect(),
+        })
+    });
     NoiseMapGen {
+        cliffs,
         decoratives: decoratives.into_iter().map(|r| r.1).collect(),
         inputs,
         constants,

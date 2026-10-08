@@ -317,6 +317,32 @@ pub fn tile_variants(data: &GameData, name: &str) -> Vec<SpriteRef> {
         .collect()
 }
 
+/// A cliff's picture for an orientation and variation: the upper part with its shadow,
+/// and the lower part (`pictures_lower`, drawn beneath other entities), flagged `true`.
+pub fn cliff_layers(
+    data: &GameData,
+    name: &str,
+    orientation: &str,
+    variation: usize,
+) -> Vec<(SpriteRef, LayerKind, bool)> {
+    let o = data.prototype("cliff", name).get("orientations").get(orientation);
+    let mut out = Vec::new();
+    for (key, lower) in [("pictures_lower", true), ("pictures", false)] {
+        let list = o.get(key).as_array();
+        let Some(pic) = list.get(variation % list.len().max(1)) else { continue };
+        let mut nodes = Vec::new();
+        collect_layers(pic, 0, &mut nodes);
+        for (layer, _) in nodes {
+            let kind =
+                if layer.get("draw_as_shadow").as_bool() == Some(true) { LayerKind::Shadow } else { LayerKind::Normal };
+            if let Some(s) = layer_frame(data, layer, 0, 0) {
+                out.push((s, kind, lower));
+            }
+        }
+    }
+    out
+}
+
 /// One picture of a decorative (its `pictures[variation]`, first non-shadow layer).
 pub fn decorative_sprite(data: &GameData, name: &str, variation: usize) -> Option<SpriteRef> {
     let pictures = data.prototype("optimized-decorative", name).get("pictures");

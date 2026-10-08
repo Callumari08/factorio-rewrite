@@ -19,6 +19,8 @@ pub struct ResourceTile {
 pub struct Chunk {
     tiles: Vec<TileId>,
     resources: Vec<Option<ResourceTile>>,
+    /// Cliffs whose grid cell starts in this chunk.
+    cliffs: Vec<crate::mapgen::PlacedCliff>,
 }
 
 fn local_index(t: TilePosition) -> usize {
@@ -128,6 +130,28 @@ impl Surface {
         }
     }
 
+    /// Cliffs in generated chunks touching the area (grown by a grid cell).
+    pub fn cliffs_near(&self, area: crate::map::Area) -> Vec<crate::mapgen::PlacedCliff> {
+        let margin = 8 * crate::map::SUBTILES_PER_TILE;
+        let lt = crate::map::MapPosition::new(area.left_top.x - margin, area.left_top.y - margin).tile().chunk();
+        let rb =
+            crate::map::MapPosition::new(area.right_bottom.x + margin, area.right_bottom.y + margin).tile().chunk();
+        let mut out = Vec::new();
+        for y in lt.y..=rb.y {
+            for x in lt.x..=rb.x {
+                if let Some(c) = self.chunks.get(&ChunkPosition { x, y }) {
+                    out.extend(c.cliffs.iter().copied());
+                }
+            }
+        }
+        out
+    }
+
+    /// The cliff entity of these settings, if cliffs are generated.
+    pub fn cliff_entity(&self) -> Option<EntityProtoId> {
+        self.settings.noise.as_ref().and_then(|n| n.cliffs.as_ref()).map(|c| c.entity)
+    }
+
     /// Entities placed by generation since the last call, in generation order.
     pub fn take_placed_entities(&mut self) -> Vec<crate::mapgen::PlacedEntity> {
         std::mem::take(&mut self.placed)
@@ -171,6 +195,7 @@ impl Surface {
             let terrain = g.generator.clone().generate(&mut g.spots, c);
             self.placed.extend(terrain.entities);
             return Chunk {
+                cliffs: terrain.cliffs,
                 tiles: terrain.tiles,
                 resources: terrain
                     .resources
@@ -192,7 +217,7 @@ impl Surface {
                 resources.push(if is_water { None } else { resource_at(&self.settings, &patches, t) });
             }
         }
-        Chunk { tiles, resources }
+        Chunk { tiles, resources, cliffs: Vec::new() }
     }
 
     fn tile_at(&self, t: TilePosition) -> TileId {

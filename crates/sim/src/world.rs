@@ -373,6 +373,17 @@ impl Simulation {
         }
     }
 
+    /// Whether a cliff's collision box overlaps the area.
+    pub fn cliff_in(&self, area: &Area) -> bool {
+        let Some(cliff) = self.surface.cliff_entity() else { return false };
+        let EntityData::Cliff { orientations, .. } = &self.db.entity(cliff).data else { return false };
+        self.surface.cliffs_near(*area).iter().any(|c| {
+            orientations
+                .get(c.orientation as usize)
+                .is_some_and(|o| o.collision_box.at(MapPosition::new(c.x, c.y)).overlaps(area))
+        })
+    }
+
     /// Entities whose footprint touches the area.
     pub fn entities_in(&self, area: Area) -> Vec<EntityId> {
         let mut out: Vec<EntityId> = area.tiles().filter_map(|t| self.tile_index.get(&t).copied()).collect();
@@ -403,6 +414,9 @@ impl Simulation {
             return Err(BuildError::TileCollision);
         }
         let area = proto.rotated_box(direction).at(position);
+        if self.cliff_in(&area) {
+            return Err(BuildError::EntityCollision);
+        }
         // Entities never share footprint tiles in this implementation.
         if !self.entities_in(footprint).is_empty() {
             return Err(BuildError::EntityCollision);

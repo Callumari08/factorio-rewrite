@@ -80,6 +80,29 @@ pub struct PlacedDecorative {
     pub variation: u8,
 }
 
+/// Cliff generation: the planet's `cliff_settings` and its cliff entity.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CliffAutoplace {
+    pub entity: EntityProtoId,
+    /// Orientation names, sorted (their index is a cliff's orientation).
+    pub orientations: Vec<String>,
+    pub variations: Vec<u8>,
+    /// Grid cell size and offset in tiles.
+    pub grid_size: [i32; 2],
+    pub grid_offset_subtiles: [i32; 2],
+    /// Tiles cliffs may stand on.
+    pub allowed_tiles: Vec<bool>,
+}
+
+/// A cliff the generator placed: its cell centre in 1/256 tiles.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct PlacedCliff {
+    pub x: i32,
+    pub y: i32,
+    pub orientation: u8,
+    pub variation: u8,
+}
+
 /// An entity the generator placed: position in 1/256 tiles.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PlacedEntity {
@@ -102,6 +125,7 @@ pub struct NoiseMapGen {
     pub entities: Vec<EntityAutoplace>,
     /// Decoratives in placement order.
     pub decoratives: Vec<DecorativeAutoplace>,
+    pub cliffs: Option<CliffAutoplace>,
 }
 
 impl Eq for NoiseMapGen {}
@@ -115,6 +139,9 @@ pub struct Generator {
     /// Groups of entities sharing an order string, each with its probability.
     entity_groups: Vec<Vec<(EntityAutoplace, NodeId)>>,
     decoratives: Vec<(DecorativeAutoplace, NodeId)>,
+    /// Cliff settings with the `cliff_elevation` and `cliffiness` properties.
+    cliffs: Option<(CliffAutoplace, NodeId, NodeId)>,
+    cliff_levels: (f32, f32),
     seed: u32,
 }
 
@@ -124,6 +151,7 @@ pub struct ChunkTerrain {
     /// Resource and amount per tile.
     pub resources: Vec<Option<(EntityProtoId, u32)>>,
     pub entities: Vec<PlacedEntity>,
+    pub cliffs: Vec<PlacedCliff>,
 }
 
 impl Generator {
@@ -156,8 +184,18 @@ impl Generator {
             let p = c.compile(&d.probability).map_err(|err| format!("decorative {}: {err}", d.name))?;
             decoratives.push((d.clone(), p));
         }
+        let cliffs = match &settings.cliffs {
+            Some(cl) => {
+                let elevation = c.compile_name("cliff_elevation").map_err(|e| format!("cliff_elevation: {e}"))?;
+                let cliffiness = c.compile_name("cliffiness").map_err(|e| format!("cliffiness: {e}"))?;
+                Some((cl.clone(), elevation, cliffiness))
+            }
+            None => None,
+        };
+        let number = |k: &str, d: f64| settings.constants.numbers.get(k).copied().unwrap_or(d) as f32;
+        let cliff_levels = (number("cliff_elevation_0", 10.0), number("cliff_elevation_interval", 40.0));
         let seed = settings.constants.numbers.get("map_seed").copied().unwrap_or(0.0) as u32;
-        Ok(Generator { program: c.program, tiles, resources, entity_groups, decoratives, seed })
+        Ok(Generator { program: c.program, tiles, resources, entity_groups, decoratives, cliffs, cliff_levels, seed })
     }
 
     pub fn node_count(&self) -> usize {
@@ -220,7 +258,110 @@ impl Generator {
             }
         }
         let entities = self.place_entities(&values[entity_base..], &tiles, first);
-        ChunkTerrain { tiles, resources, entities }
+        let cliffs = self.place_cliffs(cache, c, &tiles);
+        ChunkTerrain { tiles, resources, entities, cliffs }
+    }
+
+    /// Cliffs along the contours of `cliff_elevation` at `cliff_elevation_0 + n *
+    /// cliff_elevation_interval`, one per grid cell (marching squares), where `cliffiness`
+    /// is above 0.5. A cliff's name says which cell sides it runs between with the high
+    /// ground on its left (`west_to_east` faces south); it ends (`none`) where the next
+    /// cell along the contour is not cliffy.
+    fn place_cliffs(&self, cache: &mut SpotCache, c: ChunkPosition, tiles: &[TileId]) -> Vec<PlacedCliff> {
+        let Some((cl, elevation, cliffiness)) = &self.cliffs else { return Vec::new() };
+        let sub = crate::map::SUBTILES_PER_TILE;
+        let [gw, gh] = cl.grid_size;
+        let (ox, oy) = (cl.grid_offset_subtiles[0] as f32 / sub as f32, cl.grid_offset_subtiles[1] as f32 / sub as f32);
+        let first = c.first_tile();
+        // Cells whose top-left corner is in this chunk.
+        let (i0, j0) = (first.x.div_euclid(gw), first.y.div_euclid(gh));
+        let (ni, nj) = (CHUNK_SIZE / gw, CHUNK_SIZE / gh);
+        let corner = |i: i32, j: i32| ((i * gw) as f32 + ox, (j * gh) as f32 + oy);
+        let mut xs = Vec::new();
+        let mut ys = Vec::new();
+        for j in j0..=j0 + nj {
+            for i in i0..=i0 + ni {
+                let (x, y) = corner(i, j);
+                xs.push(x);
+                ys.push(y);
+            }
+        }
+        let corners = xs.len();
+        // Cliffiness at the centres of these cells and the ring around them.
+        for j in j0 - 1..=j0 + nj {
+            for i in i0 - 1..=i0 + ni {
+                let (x, y) = corner(i, j);
+                xs.push(x + gw as f32 / 2.0);
+                ys.push(y + gh as f32 / 2.0);
+            }
+        }
+        let v = Evaluator { program: &self.program, spots: cache }.eval(&[*elevation, *cliffiness], &xs, &ys);
+        let row = (ni + 1) as usize;
+        let elev = |i: i32, j: i32| v[0][((j - j0) as usize) * row + (i - i0) as usize];
+        let cliffy = |i: i32, j: i32| v[1][corners + ((j - j0 + 1) as usize) * (row + 1) + (i - i0 + 1) as usize] > 0.5;
+        let (e0, interval) = self.cliff_levels;
+        let mut out = Vec::new();
+        for j in j0..j0 + nj {
+            for i in i0..i0 + ni {
+                if !cliffy(i, j) {
+                    continue;
+                }
+                // Corners clockwise from the top left, with their positions in the cell.
+                let e = [elev(i, j), elev(i + 1, j), elev(i + 1, j + 1), elev(i, j + 1)];
+                let pos = [(0.0f32, 0.0f32), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)];
+                let lo = e.iter().copied().fold(f32::INFINITY, f32::min);
+                let hi = e.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+                if !eval::positive(interval) || !lo.is_finite() || !hi.is_finite() {
+                    continue;
+                }
+                let k = ((lo - e0) / interval).ceil();
+                let level = e0 + k * interval;
+                if level > hi || level < lo {
+                    continue;
+                }
+                // Sides N, E, S, W between corners (0,1), (1,2), (2,3), (3,0).
+                let crossed: Vec<usize> = (0..4).filter(|s| (e[*s] > level) != (e[(s + 1) % 4] > level)).collect();
+                if crossed.len() < 2 {
+                    continue;
+                }
+                let (a, b) = (crossed[0], crossed[1]);
+                let mid = |s: usize| {
+                    let (p, q) = (pos[s], pos[(s + 1) % 4]);
+                    ((p.0 + q.0) / 2.0, (p.1 + q.1) / 2.0)
+                };
+                let (ma, mb) = (mid(a), mid(b));
+                let heading = (mb.0 - ma.0, mb.1 - ma.1);
+                let left = (heading.1, -heading.0);
+                let high = (0..4).find(|k| e[*k] > level).unwrap();
+                let centre = ((ma.0 + mb.0) / 2.0, (ma.1 + mb.1) / 2.0);
+                let to_high = (pos[high].0 - centre.0, pos[high].1 - centre.1);
+                let (from, to) = if to_high.0 * left.0 + to_high.1 * left.1 > 0.0 { (a, b) } else { (b, a) };
+                const SIDES: [&str; 4] = ["north", "east", "south", "west"];
+                const STEP: [(i32, i32); 4] = [(0, -1), (1, 0), (0, 1), (-1, 0)];
+                let side_name = |s: usize| {
+                    let (dx, dy) = STEP[s];
+                    if cliffy(i + dx, j + dy) { SIDES[s] } else { "none" }
+                };
+                let name = format!("{}_to_{}", side_name(from), side_name(to));
+                let Some(orientation) = cl.orientations.iter().position(|o| *o == name) else { continue };
+                let (cx, cy) = corner(i, j);
+                let (cx, cy) = (cx + gw as f32 / 2.0, cy + gh as f32 / 2.0);
+                let (tx, ty) = (cx.floor() as i32, cy.floor() as i32);
+                let local = ((ty - first.y) * CHUNK_SIZE + (tx - first.x)) as usize;
+                if tiles.get(local).is_some_and(|t| !cl.allowed_tiles.get(t.index()).copied().unwrap_or(false)) {
+                    continue;
+                }
+                let variations = cl.variations.get(orientation).copied().unwrap_or(1).max(1);
+                let variation = (self.unit(0xc11f, i as u32, j as u32, 0) * variations as f32) as u8;
+                out.push(PlacedCliff {
+                    x: (cx * sub as f32).round() as i32,
+                    y: (cy * sub as f32).round() as i32,
+                    orientation: orientation as u8,
+                    variation: variation.min(variations - 1),
+                });
+            }
+        }
+        out
     }
 
     /// The decoratives of a chunk whose tiles are `tiles`. Like entities, decoratives

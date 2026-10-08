@@ -30,6 +30,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             placed.extend(surface.take_placed_entities());
         }
     }
+    let all = factorio_sim::map::Area {
+        left_top: factorio_sim::map::MapPosition::from_tiles(-r * CHUNK_SIZE, -r * CHUNK_SIZE),
+        right_bottom: factorio_sim::map::MapPosition::from_tiles(r * CHUNK_SIZE, r * CHUNK_SIZE),
+    };
+    let cliffs: std::collections::HashSet<(i32, i32)> =
+        surface.cliffs_near(all).iter().map(|c| (c.x.div_euclid(256), c.y.div_euclid(256))).collect();
+    eprintln!("cliffs: {}", cliffs.len());
     let mut scenery = std::collections::HashMap::new();
     for p in &placed {
         scenery.insert((p.x.div_euclid(256), p.y.div_euclid(256)), p.entity);
@@ -68,6 +75,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 *counts.entry(format!("[{}]", db.entity(*e).kind)).or_default() += 1;
                 c = if db.entity(*e).kind == "tree" { [20, 60, 20] } else { [120, 120, 120] };
                 let _ = name;
+            }
+            if cliffs.contains(&(t.x, t.y)) {
+                c = [255, 40, 40];
             }
             if x == size / 2 || y == size / 2 {
                 c = [255, 255, 255];

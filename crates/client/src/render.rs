@@ -19,6 +19,7 @@ pub struct RenderPlugin;
 impl Plugin for RenderPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Mirror>()
+            .init_resource::<CliffMirror>()
             .init_resource::<Pools>()
             .add_systems(Startup, spawn_character)
             .add_systems(Update, (sync_entities, draw_items, draw_character, draw_ghost, follow_camera).chain());
@@ -33,6 +34,10 @@ struct Mirrored {
 
 #[derive(Resource, Default)]
 struct Mirror(HashMap<EntityId, Mirrored>);
+
+/// Sprites of the cliffs on screen, by position.
+#[derive(Resource, Default)]
+struct CliffMirror(HashMap<(i32, i32), Vec<Entity>>);
 
 #[derive(Resource, Default)]
 struct Pools {
@@ -74,6 +79,56 @@ fn is_working(state: &EntityState) -> bool {
         EntityState::Fluid(f) => f.last_power.is_positive(),
         EntityState::Lab(l) => l.working,
         _ => false,
+    }
+}
+
+/// Spawns sprites for cliffs coming on screen and removes those leaving it.
+fn draw_cliffs(
+    commands: &mut Commands,
+    sim: &Sim,
+    data: &Data,
+    assets: &AssetServer,
+    mirror: &mut CliffMirror,
+    view: factorio_sim::map::Area,
+) {
+    let Some(cliff) = sim.0.surface.cliff_entity() else { return };
+    let proto = sim.0.prototypes().entity(cliff);
+    let EntityData::Cliff { orientations, .. } = &proto.data else { return };
+    let cliffs = sim.0.surface.cliffs_near(view);
+    let visible: HashSet<(i32, i32)> = cliffs.iter().map(|c| (c.x, c.y)).collect();
+    mirror.0.retain(|k, sprites| {
+        let keep = visible.contains(k);
+        if !keep {
+            for e in sprites.iter() {
+                commands.entity(*e).despawn();
+            }
+        }
+        keep
+    });
+    for c in cliffs {
+        if mirror.0.contains_key(&(c.x, c.y)) {
+            continue;
+        }
+        let Some(o) = orientations.get(c.orientation as usize) else { continue };
+        let pos = map_to_world(factorio_sim::map::MapPosition::new(c.x, c.y));
+        let mut sprites = Vec::new();
+        for (i, (sprite, kind, lower)) in
+            factorio_data::sprite::cliff_layers(&data.0, &proto.name, &o.name, c.variation as usize)
+                .into_iter()
+                .enumerate()
+        {
+            let l = Loaded { image: assets.load(crate::sprites::asset_path(data, &sprite.path)), sprite };
+            let at = pos + l.shift();
+            let (z, color) = match (kind, lower) {
+                (LayerKind::Shadow, _) => (-3.0 + i as f32 * 1e-6, Color::srgba(0.0, 0.0, 0.0, 0.55)),
+                (_, true) => (-5.0 + i as f32 * 1e-6, Color::WHITE),
+                _ => (depth(pos.y, 0.0) + i as f32 * 1e-6, Color::WHITE),
+            };
+            let mut s = l.sprite();
+            s.color = color;
+            sprites.push(commands.spawn((s, Transform::from_xyz(at.x, at.y, z))).id());
+        }
+        mirror.0.insert((c.x, c.y), sprites);
     }
 }
 
@@ -212,6 +267,7 @@ fn sync_entities(
     mut q: Query<(&mut Sprite, &mut Transform), Without<Camera2d>>,
     camera: Single<(&Transform, &Projection), With<Camera2d>>,
     window: Single<&Window, With<bevy::window::PrimaryWindow>>,
+    mut cliff_mirror: ResMut<CliffMirror>,
 ) {
     // Only entities on screen (plus a margin for tall sprites) are mirrored.
     let (ct, proj) = *camera;
@@ -225,6 +281,7 @@ fn sync_entities(
         left_top: crate::world_to_map(Vec2::new(c.x - half.x, c.y + half.y)),
         right_bottom: crate::world_to_map(Vec2::new(c.x + half.x, c.y - half.y)),
     };
+    draw_cliffs(&mut commands, &sim, &data, &assets, &mut cliff_mirror, view);
     let ids = sim.0.entities_in(view);
     let live: HashSet<EntityId> = ids.iter().copied().collect();
     mirror.0.retain(|id, m| {

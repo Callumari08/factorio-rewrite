@@ -307,8 +307,23 @@ pub enum EntityData {
         energy_usage: Energy,
         energy_source: EnergySource,
     },
+    /// Cliffs: one entity per grid cell, in one of the orientations (sorted by name, e.g.
+    /// `west_to_east`), each with its collision box (axis-aligned around a rotated box).
+    Cliff {
+        orientations: Vec<CliffOrientation>,
+        /// Grid cell size and offset in 1/256 tiles.
+        grid_size: [i32; 2],
+        grid_offset: [i32; 2],
+    },
     /// Anything not simulated yet; it can still be placed and drawn.
     Other,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CliffOrientation {
+    pub name: String,
+    pub collision_box: BoundingBox,
+    pub variations: u8,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

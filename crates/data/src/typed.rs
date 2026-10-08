@@ -652,6 +652,39 @@ fn entity_proto(names: &Names, kind: &str, name: &str, p: &RawValue) -> std::res
                 energy_source: names.energy_source(p.get("energy_source"), energy_usage.div_int(30)),
             }
         }
+        "cliff" => {
+            let mut orientations: Vec<CliffOrientation> = p
+                .get("orientations")
+                .as_table()
+                .into_iter()
+                .flatten()
+                .map(|(name, o)| {
+                    // The box may be rotated (third value, in turns); use its bounding box.
+                    let b = o.get("collision_bounding_box");
+                    let (lt, rb) = (vector(b.at(0)), vector(b.at(1)));
+                    let turn = b.at(2).as_f64().unwrap_or(0.0) * std::f64::consts::TAU;
+                    let (cx, cy) = ((lt[0] + rb[0]) / 2.0, (lt[1] + rb[1]) / 2.0);
+                    let (hw, hh) = ((rb[0] - lt[0]) / 2.0, (rb[1] - lt[1]) / 2.0);
+                    let ex = hw * turn.cos().abs() + hh * turn.sin().abs();
+                    let ey = hw * turn.sin().abs() + hh * turn.cos().abs();
+                    CliffOrientation {
+                        name: name.clone(),
+                        collision_box: BoundingBox::new(
+                            [subtiles(cx - ex), subtiles(cy - ey)],
+                            [subtiles(cx + ex), subtiles(cy + ey)],
+                        ),
+                        variations: o.get("pictures").as_array().len().clamp(1, 255) as u8,
+                    }
+                })
+                .collect();
+            orientations.sort_by(|a, b| a.name.cmp(&b.name));
+            let grid = vector(p.get("grid_size"));
+            EntityData::Cliff {
+                orientations,
+                grid_size: [subtiles(grid[0].max(1.0)), subtiles(grid[1].max(1.0))],
+                grid_offset: vector_subtiles(p.get("grid_offset")),
+            }
+        }
         "pipe" | "pipe-to-ground" => EntityData::Pipe { fluid_box: names.fluid_box(p.get("fluid_box")) },
         _ => EntityData::Other,
     };
