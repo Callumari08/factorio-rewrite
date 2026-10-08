@@ -7,3 +7,4 @@ license.workspace = true
 
 # Keep this crate free of Bevy, Lua and anything non-deterministic.
 [dependencies]
+libm = "0.2"

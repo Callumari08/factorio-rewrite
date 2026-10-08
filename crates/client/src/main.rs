@@ -65,10 +65,19 @@ fn main() -> AppExit {
     let data = factorio_data::load_game_data(&config).unwrap_or_else(|e| fail(&e));
     let db = Arc::new(factorio_data::typed::build_prototype_db(&data).unwrap_or_else(|e| fail(&e)));
     let seed = std::env::var("FACTORIO_REWRITE_SEED").ok().and_then(|s| s.parse().ok()).unwrap_or(0x5EED_u64);
-    let mapgen = factorio_data::mapgen::default_mapgen(&db, seed);
+    // The game's noise-expression terrain is still being tuned (the starting area is not
+    // right yet), so it is opt-in for now.
+    let mapgen = if std::env::var_os("FACTORIO_REWRITE_NOISE_MAPGEN").is_some() {
+        factorio_data::mapgen::planet_mapgen(&data, &db, seed)
+    } else {
+        factorio_data::mapgen::default_mapgen(&db, seed)
+    };
     let install_root = data.install.root.to_string_lossy().into_owned();
 
     let mut sim = Simulation::new(db.clone(), mapgen);
+    if let Some(e) = &sim.surface.noise_error {
+        eprintln!("warning: the game's map generation expressions failed to compile ({e}); using a simpler generator");
+    }
     let mut start = vec![PlayerInput::new(LOCAL_PLAYER, InputAction::JoinGame)];
     // Freeplay's starting inventory (base/script/freeplay/freeplay.lua, `created_items`).
     for (name, count) in [

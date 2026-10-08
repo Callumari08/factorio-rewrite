@@ -58,6 +58,9 @@ pub struct MapGenSettings {
     pub resources: Vec<ResourceRule>,
     /// No water or non-starting resources within this many tiles of the origin.
     pub starting_radius: i32,
+    /// The game's noise-expression map generation; when present it replaces the banded
+    /// generator above.
+    pub noise: Option<crate::mapgen::NoiseMapGen>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -77,12 +80,23 @@ pub struct Surface {
     pub settings: MapGenSettings,
     chunks: BTreeMap<ChunkPosition, Chunk>,
     starting_patches: Vec<Patch>,
+    generator: Option<crate::mapgen::GeneratorState>,
+    /// Why the noise expressions could not be compiled, if they could not.
+    pub noise_error: Option<String>,
 }
 
 impl Surface {
     pub fn new(settings: MapGenSettings) -> Self {
         let starting_patches = starting_patches(&settings);
-        Surface { settings, chunks: BTreeMap::new(), starting_patches }
+        let (generator, noise_error) = match settings.noise.as_ref().map(crate::mapgen::Generator::new) {
+            Some(Ok(g)) => (
+                Some(crate::mapgen::GeneratorState { generator: std::sync::Arc::new(g), spots: Default::default() }),
+                None,
+            ),
+            Some(Err(e)) => (None, Some(e)),
+            None => (None, None),
+        };
+        Surface { settings, chunks: BTreeMap::new(), starting_patches, generator, noise_error }
     }
 
     pub fn chunks(&self) -> impl Iterator<Item = (ChunkPosition, &Chunk)> {
@@ -137,7 +151,18 @@ impl Surface {
         }
     }
 
-    fn generate(&self, c: ChunkPosition) -> Chunk {
+    fn generate(&mut self, c: ChunkPosition) -> Chunk {
+        if let Some(g) = &mut self.generator {
+            let terrain = g.generator.clone().generate(&mut g.spots, c);
+            return Chunk {
+                tiles: terrain.tiles,
+                resources: terrain
+                    .resources
+                    .into_iter()
+                    .map(|r| r.map(|(proto, amount)| ResourceTile { proto, amount }))
+                    .collect(),
+            };
+        }
         let first = c.first_tile();
         let mut tiles = Vec::with_capacity(CHUNK_TILES);
         let mut resources = Vec::with_capacity(CHUNK_TILES);

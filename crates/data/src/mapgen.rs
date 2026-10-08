@@ -1,12 +1,18 @@
 //! Builds map generation settings from the loaded prototypes.
 //!
-//! Until Factorio's noise-expression language is implemented, terrain uses the sim's own
-//! integer noise. This module maps the available tiles and resources onto that generator:
-//! known Nauvis tile names get moisture/aux bands resembling the real map, and any other
-//! auto-placed land tiles (from mods) fall back to the remaining space.
+//! The planet's terrain comes from the game's noise expressions ([`noise_mapgen`]): every
+//! named `noise-expression` and `noise-function`, and the `autoplace` of each tile and
+//! resource the planet lists. The older banded generator below is kept as a fallback for
+//! data whose expressions cannot be compiled.
 
+use std::collections::BTreeMap;
+
+use factorio_sim::mapgen::{Constants, NoiseDef, NoiseInputs, NoiseMapGen, ResourceAutoplace, TileAutoplace};
 use factorio_sim::proto::{EntityData, ItemOrFluid, PrototypeDb, TileId};
 use factorio_sim::surface::{LandTileRule, MapGenSettings, ResourceRule};
+
+use crate::datastage::GameData;
+use crate::raw::RawValue;
 
 const N: i64 = 1 << 16;
 
@@ -70,5 +76,154 @@ pub fn default_mapgen(db: &PrototypeDb, seed: u64) -> MapGenSettings {
         .map(|e| ResourceRule { resource: e, starting_area: true, weight: 1 })
         .collect();
 
-    MapGenSettings { seed, water, deep_water, land, fallback_land, resources, starting_radius: 48 }
+    MapGenSettings { seed, water, deep_water, land, fallback_land, resources, starting_radius: 48, noise: None }
+}
+
+/// A `NoiseExpression` value: a string, a number or a boolean.
+fn expr_text(v: &RawValue) -> Option<String> {
+    match v {
+        RawValue::Str(s) => Some(s.clone()),
+        RawValue::Nil => None,
+        v => v
+            .as_bool()
+            .map(|b| if b { "1".into() } else { "0".into() })
+            .or_else(|| v.as_f64().map(|n| format!("{n:?}"))),
+    }
+}
+
+/// A noise expression or function with its local expressions and functions.
+fn noise_def(p: &RawValue, expression_key: &str) -> Option<NoiseDef> {
+    let expression = expr_text(p.get(expression_key))?;
+    let locals = p
+        .get("local_expressions")
+        .as_table()
+        .into_iter()
+        .flatten()
+        .filter_map(|(k, v)| expr_text(v).map(|e| (k.clone(), e)))
+        .collect();
+    let local_functions = p
+        .get("local_functions")
+        .as_table()
+        .into_iter()
+        .flatten()
+        .filter_map(|(k, v)| noise_def(v, "expression").map(|d| (k.clone(), d)))
+        .collect();
+    let params = p.get("parameters").as_array().iter().filter_map(|v| v.as_str().map(str::to_owned)).collect();
+    Some(NoiseDef { params, expression, locals, local_functions })
+}
+
+/// The autoplace expressions of one prototype, with the spec's local definitions.
+fn autoplace_defs(a: &RawValue) -> Option<(NoiseDef, Option<NoiseDef>)> {
+    let probability = noise_def(a, "probability_expression")?;
+    let richness = expr_text(a.get("richness_expression")).map(|e| NoiseDef { expression: e, ..probability.clone() });
+    Some((probability, richness))
+}
+
+/// Map generation for a planet from the game's noise expressions.
+pub fn noise_mapgen(data: &GameData, db: &PrototypeDb, planet: &str, seed: u64) -> NoiseMapGen {
+    let mut inputs = NoiseInputs::default();
+    for (name, p) in data.raw.get("noise-expression").as_table().into_iter().flatten() {
+        if let Some(d) = noise_def(p, "expression") {
+            inputs.expressions.insert(name.clone(), d);
+        }
+    }
+    for (name, p) in data.raw.get("noise-function").as_table().into_iter().flatten() {
+        if let Some(d) = noise_def(p, "expression") {
+            inputs.functions.insert(name.clone(), d);
+        }
+    }
+    let settings = data.prototype("planet", planet).get("map_gen_settings");
+    for (k, v) in settings.get("property_expression_names").as_table().into_iter().flatten() {
+        if let Some(name) = v.as_str() {
+            inputs.property_names.insert(k.clone(), name.to_owned());
+        }
+    }
+
+    // Constants: map settings at their defaults, and every autoplace control at 100%.
+    let map_seed = (seed as u32)
+        .wrapping_add(data.prototype("planet", planet).get("map_seed_offset").as_i64().unwrap_or(0) as u32);
+    let mut numbers: BTreeMap<String, f64> = BTreeMap::new();
+    numbers.insert("map_seed".into(), map_seed as f64);
+    numbers.insert("map_seed_small".into(), (map_seed & 0xFFFF) as f64);
+    numbers.insert("map_seed_normalized".into(), map_seed as f64 / u32::MAX as f64);
+    numbers.insert("map_width".into(), 2_000_000.0);
+    numbers.insert("map_height".into(), 2_000_000.0);
+    numbers.insert("starting_area_radius".into(), 600.0);
+    numbers.insert("peaceful_mode".into(), 0.0);
+    numbers.insert("no_enemies_mode".into(), 0.0);
+    let cliffs = settings.get("cliff_settings");
+    numbers.insert("cliff_elevation_0".into(), cliffs.get("cliff_elevation_0").as_f64().unwrap_or(10.0));
+    numbers.insert("cliff_elevation_interval".into(), cliffs.get("cliff_elevation_interval").as_f64().unwrap_or(40.0));
+    numbers.insert("cliff_smoothing".into(), cliffs.get("cliff_smoothing").as_f64().unwrap_or(0.0));
+    numbers.insert("cliff_richness".into(), cliffs.get("richness").as_f64().unwrap_or(1.0));
+    for name in data.raw.get("autoplace-control").as_table().into_iter().flatten().map(|(n, _)| n) {
+        for k in ["frequency", "size", "richness"] {
+            numbers.insert(format!("control:{name}:{k}"), 1.0);
+        }
+    }
+    for climate in ["moisture", "aux", "temperature"] {
+        numbers.insert(format!("control:{climate}:frequency"), 1.0);
+        numbers.insert(format!("control:{climate}:bias"), 0.0);
+    }
+    // One start at the origin and a lake near it. Where the game puts the lake is not
+    // documented; this places it 64 tiles away in a direction chosen by the seed.
+    let angle =
+        (factorio_sim::mapgen::basis::hash32(map_seed ^ 0x1a4e) as f64 / u32::MAX as f64) * std::f64::consts::TAU;
+    let mut points = BTreeMap::new();
+    points.insert("starting_positions".to_owned(), vec![(0.0f32, 0.0f32)]);
+    points
+        .insert("starting_lake_positions".to_owned(), vec![((angle.cos() * 64.0) as f32, (angle.sin() * 64.0) as f32)]);
+    let constants = Constants { numbers, points };
+
+    let listed = |kind: &str| -> Vec<String> {
+        settings
+            .get("autoplace_settings")
+            .get(kind)
+            .get("settings")
+            .as_table()
+            .into_iter()
+            .flatten()
+            .map(|(n, _)| n.clone())
+            .collect()
+    };
+    let resource_layer = db.collision_layers.iter().position(|l| l == "resource").map(|i| 1u64 << i).unwrap_or(0);
+    let mut tiles = Vec::new();
+    for name in listed("tile") {
+        let (Some(tile), Some((probability, richness))) =
+            (db.tile_id(&name), autoplace_defs(data.prototype("tile", &name).get("autoplace")))
+        else {
+            continue;
+        };
+        inputs.variables.insert(format!("tile:{name}:probability"), probability.clone());
+        inputs.variables.insert(format!("tile:{name}:richness"), richness.unwrap_or_else(|| probability.clone()));
+        let blocks_resources = db.tile(tile).collision_mask.layers & resource_layer != 0;
+        tiles.push(TileAutoplace { tile, probability, blocks_resources });
+    }
+    let mut resources: Vec<(String, ResourceAutoplace)> = Vec::new();
+    for name in listed("entity") {
+        let Some(e) = db.entity_id(&name) else { continue };
+        let proto = db.entity(e);
+        let Some((kind, _, raw)) = data.prototypes_in_category("entity").find(|(_, n, _)| *n == name) else { continue };
+        let Some((probability, richness)) = autoplace_defs(raw.get("autoplace")) else { continue };
+        inputs.variables.insert(format!("entity:{name}:probability"), probability.clone());
+        inputs
+            .variables
+            .insert(format!("entity:{name}:richness"), richness.clone().unwrap_or_else(|| probability.clone()));
+        // Fluid resources (crude oil) are placed as single entities; not generated yet.
+        let solid =
+            proto.minable.as_ref().is_some_and(|m| m.results.iter().all(|r| matches!(r.what, ItemOrFluid::Item(_))));
+        if kind == "resource" && solid {
+            let order = raw.get("autoplace").get("order").as_str().unwrap_or("").to_owned();
+            resources.push((order + &name, ResourceAutoplace { resource: e, probability, richness }));
+        }
+    }
+    resources.sort_by(|a, b| a.0.cmp(&b.0));
+    NoiseMapGen { inputs, constants, tiles, resources: resources.into_iter().map(|r| r.1).collect() }
+}
+
+/// [`default_mapgen`] with the planet's noise-expression terrain.
+pub fn planet_mapgen(data: &GameData, db: &PrototypeDb, seed: u64) -> MapGenSettings {
+    let mut s = default_mapgen(db, seed);
+    s.noise = Some(noise_mapgen(data, db, "nauvis", seed));
+    s
 }

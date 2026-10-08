@@ -21,6 +21,7 @@ pub mod input;
 pub mod inventory;
 pub mod machines;
 pub mod map;
+pub mod mapgen;
 pub mod noise;
 pub mod player;
 pub mod power;

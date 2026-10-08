@@ -20,7 +20,15 @@ Read this first when picking the project up in a new session. See also
   crafted, research finished) for it; they are not game state. Approximations: the distance
   falloff curve and hearing range (not documented by the game), footstep and pickaxe timing,
   wind/ambience crossfade, music order, idle sounds and sound accents are not played.
-- **Next task: step 3 item 4, map generation parity** (noise expressions).
+- Step 3 item 4 (map generation parity) is in progress. `crates/sim/src/mapgen/` parses,
+  compiles and evaluates the game's noise expressions (all of Nauvis's compile);
+  `crates/data/src/mapgen.rs` `planet_mapgen` feeds it the planet's tiles and resources.
+  It is opt-in (`FACTORIO_REWRITE_NOISE_MAPGEN=1`) until the starting area is right: the
+  starting ore patches currently spread over the spawn. `cargo run --release -p
+  factorio-data --example mapimage -- map.ppm 24` renders a map for checking. Still to do:
+  starting area, patch shapes, trees, rocks, decoratives, cliffs, tile transitions.
+  Factorio's basis noise algorithm is not public; ours is gradient noise with its amplitude
+  calibrated visually (`BASIS_AMPLITUDE`), so maps follow the game's rules but not its seeds.
 - All tests pass: `cargo test --workspace` (sim unit tests, plus gameplay tests in
   `crates/data/tests/` that load the real game and check values such as tick timings and
   throughputs).
@@ -37,7 +45,9 @@ Read this first when picking the project up in a new session. See also
 
 - **Determinism.** Sim: fixed 60 UPS, no floats in game logic (use `Fixed`, integer map
   positions in 1/256 tiles), no HashMap iteration, no wall clock or threads, all changes via
-  `InputAction`s. Times are stored as exact ticks at load time (e.g. `mining_ticks`).
+  `InputAction`s. The one float exception is map generation, which evaluates noise in `f32` like
+  the game, using only IEEE basic operations and the pure-Rust `libm` (bit-identical on all
+  platforms). Times are stored as exact ticks at load time (e.g. `mining_ticks`).
 - **Data-driven.** No base-game names in the sim; prototypes and categories come from the
   game data (`defines.prototypes`, collision mask defaults, locale) so Space Age/mods work.
 - **Never commit game data.** Everything is read from the user's install at runtime.
