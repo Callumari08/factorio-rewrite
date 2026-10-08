@@ -82,11 +82,9 @@ pub fn basis_seeded(seed: u32, x: f32, y: f32) -> f32 {
     (a + (b - a) * v) * BASIS_AMPLITUDE
 }
 
-/// Scales raw gradient noise (standard deviation 0.27) to the game's apparent amplitude.
-/// The game's value is not known; at 2 Nauvis's own expressions give lakes on about a
-/// tenth of the map and its mix of grass, dirt and desert. Lower values give almost no
-/// water, so this is the calibration to revisit if a better reference turns up.
-const BASIS_AMPLITUDE: f32 = 2.0;
+/// Scales raw gradient noise (peak 0.89) so its output spans about -1..1, as the game
+/// documents for basis noise.
+const BASIS_AMPLITUDE: f32 = 1.12;
 
 /// `fastapprox`'s `fastlog2`.
 pub fn fast_log2(x: f32) -> f32 {
@@ -127,7 +125,7 @@ mod tests {
             let v = basis(123, 7, i as f32 * 0.137, i as f32 * -0.071);
             max = max.max(v.abs());
         }
-        assert!(max > 0.8 && max <= 2.0, "max {max}");
+        assert!(max > 0.8 && max <= 1.01, "max {max}");
         assert_eq!(basis(5, 6, 0.3, 0.7), basis(5, 6, 0.3, 0.7));
         assert_ne!(basis(5, 6, 0.3, 0.7), basis(5, 7, 0.3, 0.7));
     }

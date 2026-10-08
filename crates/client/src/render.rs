@@ -82,6 +82,17 @@ fn is_working(state: &EntityState) -> bool {
 fn entity_look(sim: &Sim, data: &Data, sprites: &mut Sprites, assets: &AssetServer, id: EntityId) -> Option<Look> {
     let single = |l: Option<(String, Loaded)>| l.map(|(k, l)| (k, vec![(l, LayerKind::Normal)]));
     let e = sim.0.entity(id)?;
+    if let EntityState::Static { variation } = e.state {
+        let name = sim.0.prototypes().entity(e.proto).name.clone();
+        let layers: Vec<(Loaded, LayerKind)> =
+            factorio_data::sprite::scenery_layers(&data.0, &name, variation as usize)
+                .into_iter()
+                .map(|(sprite, kind)| {
+                    (Loaded { image: assets.load(crate::sprites::asset_path(data, &sprite.path)), sprite }, kind)
+                })
+                .collect();
+        return (!layers.is_empty()).then(|| (format!("static:{name}:{variation}"), layers));
+    }
     let is_belt_or_pipe = matches!(e.state, EntityState::Belt) || sim.0.prototypes().entity(e.proto).kind == "pipe";
     if is_belt_or_pipe {
         return single(entity_look_single(sim, data, sprites, assets, id));
@@ -198,9 +209,24 @@ fn sync_entities(
     assets: Res<AssetServer>,
     mut sprites: ResMut<Sprites>,
     mut mirror: ResMut<Mirror>,
-    mut q: Query<(&mut Sprite, &mut Transform)>,
+    mut q: Query<(&mut Sprite, &mut Transform), Without<Camera2d>>,
+    camera: Single<(&Transform, &Projection), With<Camera2d>>,
+    window: Single<&Window, With<bevy::window::PrimaryWindow>>,
 ) {
-    let live: HashSet<EntityId> = sim.0.entities().map(|(id, _)| id).collect();
+    // Only entities on screen (plus a margin for tall sprites) are mirrored.
+    let (ct, proj) = *camera;
+    let scale = match proj {
+        Projection::Orthographic(o) => o.scale,
+        _ => 1.0,
+    };
+    let half = window.size() / 2.0 * scale + Vec2::splat(TILE * 6.0);
+    let c = ct.translation.truncate();
+    let view = factorio_sim::map::Area {
+        left_top: crate::world_to_map(Vec2::new(c.x - half.x, c.y + half.y)),
+        right_bottom: crate::world_to_map(Vec2::new(c.x + half.x, c.y - half.y)),
+    };
+    let ids = sim.0.entities_in(view);
+    let live: HashSet<EntityId> = ids.iter().copied().collect();
     mirror.0.retain(|id, m| {
         let keep = live.contains(id);
         if !keep {
@@ -215,10 +241,21 @@ fn sync_entities(
     });
 
     let db = sim.0.prototypes();
-    for (id, e) in sim.0.entities() {
+    for id in ids {
+        let Some(e) = sim.0.entity(id) else { continue };
         let proto = db.entity(e.proto);
         let pos = map_to_world(e.position);
-        let look = entity_look(&sim, &data, &mut sprites, &assets, id);
+        // Pictures that cannot have changed are not looked up again.
+        let unchanged = mirror.0.get(&id).is_some_and(|m| match e.state {
+            EntityState::Static { variation } => m.key == format!("static:{}:{variation}", proto.name),
+            EntityState::Belt => false,
+            _ => {
+                proto.kind != "pipe"
+                    && !is_working(&e.state)
+                    && m.key == format!("layers:{}:{}:false:0", proto.name, dir_index(e.direction))
+            }
+        });
+        let look = if unchanged { None } else { entity_look(&sim, &data, &mut sprites, &assets, id) };
         let layer = if matches!(e.state, EntityState::Belt) { -10.0 } else { 0.0 };
         let entry = mirror.0.entry(id).or_insert_with(|| {
             let hand = if let EntityData::Inserter { .. } = proto.data {
@@ -248,6 +285,9 @@ fn sync_entities(
                     let (z, color) = match kind {
                         LayerKind::Shadow => (-3.0 + i as f32 * 1e-6, Color::srgba(0.0, 0.0, 0.0, 0.55)),
                         LayerKind::Normal => (depth(pos.y, layer) + i as f32 * 1e-6, Color::WHITE),
+                        LayerKind::Tinted([r, g, b, a]) => {
+                            (depth(pos.y, layer) + i as f32 * 1e-6, Color::srgba_u8(*r, *g, *b, *a))
+                        }
                     };
                     match q.get_mut(*ent) {
                         Ok((mut sprite, mut tf)) => {
@@ -425,7 +465,7 @@ fn draw_ghost(
     } else {
         let l: Vec<Loaded> = factorio_data::sprite::entity_layers(&d, &name, di, 0, false)
             .into_iter()
-            .filter(|(_, k)| *k == LayerKind::Normal)
+            .filter(|(_, k)| *k != LayerKind::Shadow)
             .map(|(sprite, _)| Loaded { image: assets.load(crate::sprites::asset_path(&data, &sprite.path)), sprite })
             .collect();
         if l.is_empty() {

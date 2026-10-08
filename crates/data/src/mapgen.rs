@@ -7,7 +7,9 @@
 
 use std::collections::BTreeMap;
 
-use factorio_sim::mapgen::{Constants, NoiseDef, NoiseInputs, NoiseMapGen, ResourceAutoplace, TileAutoplace};
+use factorio_sim::mapgen::{
+    Constants, EntityAutoplace, NoiseDef, NoiseInputs, NoiseMapGen, ResourceAutoplace, TileAutoplace,
+};
 use factorio_sim::proto::{EntityData, ItemOrFluid, PrototypeDb, TileId};
 use factorio_sim::surface::{LandTileRule, MapGenSettings, ResourceRule};
 
@@ -200,7 +202,21 @@ pub fn noise_mapgen(data: &GameData, db: &PrototypeDb, planet: &str, seed: u64) 
         tiles.push(TileAutoplace { tile, probability, blocks_resources });
     }
     let mut resources: Vec<(String, ResourceAutoplace)> = Vec::new();
-    for name in listed("entity") {
+    let mut scenery: Vec<(String, EntityAutoplace)> = Vec::new();
+    // Entities the planet lists, plus those whose autoplace control it enables (trees).
+    let controls: Vec<String> =
+        settings.get("autoplace_controls").as_table().into_iter().flatten().map(|(n, _)| n.clone()).collect();
+    let mut names = listed("entity");
+    for (kind, name, p) in data.prototypes_in_category("entity") {
+        let a = p.get("autoplace");
+        if matches!(kind, "tree" | "simple-entity")
+            && a.get("control").as_str().is_some_and(|c| controls.iter().any(|x| x == c))
+            && !names.iter().any(|n| n == name)
+        {
+            names.push(name.to_owned());
+        }
+    }
+    for name in names {
         let Some(e) = db.entity_id(&name) else { continue };
         let proto = db.entity(e);
         let Some((kind, _, raw)) = data.prototypes_in_category("entity").find(|(_, n, _)| *n == name) else { continue };
@@ -212,13 +228,60 @@ pub fn noise_mapgen(data: &GameData, db: &PrototypeDb, planet: &str, seed: u64) 
         // Fluid resources (crude oil) are placed as single entities; not generated yet.
         let solid =
             proto.minable.as_ref().is_some_and(|m| m.results.iter().all(|r| matches!(r.what, ItemOrFluid::Item(_))));
+        let order = raw.get("autoplace").get("order").as_str().unwrap_or("").to_owned();
         if kind == "resource" && solid {
-            let order = raw.get("autoplace").get("order").as_str().unwrap_or("").to_owned();
             resources.push((order + &name, ResourceAutoplace { resource: e, probability, richness }));
+        } else if matches!(kind, "tree" | "simple-entity") {
+            let a = raw.get("autoplace");
+            let restriction: Vec<&str> =
+                a.get("tile_restriction").as_array().iter().filter_map(|t| t.as_str()).collect();
+            let allowed_tiles = db
+                .tile_ids()
+                .map(|t| {
+                    let tile = db.tile(t);
+                    !tile.collision_mask.collides(&proto.collision_mask)
+                        && (restriction.is_empty() || restriction.contains(&tile.name.as_str()))
+                })
+                .collect();
+            let flags: Vec<&str> = raw.get("flags").as_array().iter().filter_map(|f| f.as_str()).collect();
+            // Half the size of the generation box, in tiles beyond the entity's own tile.
+            let mgbb = match raw.get("map_generator_bounding_box") {
+                RawValue::Nil => raw.get("collision_box"),
+                b => b,
+            };
+            let extent = [mgbb.at(0).at(0), mgbb.at(0).at(1), mgbb.at(1).at(0), mgbb.at(1).at(1)]
+                .iter()
+                .filter_map(|v| v.as_f64())
+                .fold(0.0f64, |m, v| m.max(v.abs()));
+            let variations = match kind {
+                "tree" => raw.get("variations").as_array().len(),
+                _ => raw.get("pictures").as_array().len(),
+            }
+            .clamp(1, 255) as u8;
+            scenery.push((
+                order + &name,
+                EntityAutoplace {
+                    entity: e,
+                    probability,
+                    order: raw.get("autoplace").get("order").as_str().unwrap_or("").to_owned(),
+                    placement_density: a.get("placement_density").as_i64().unwrap_or(1).max(1) as u32,
+                    allowed_tiles,
+                    off_grid: flags.contains(&"placeable-off-grid"),
+                    spacing: (extent - 0.5).ceil().max(0.0) as i32,
+                    variations,
+                },
+            ));
         }
     }
     resources.sort_by(|a, b| a.0.cmp(&b.0));
-    NoiseMapGen { inputs, constants, tiles, resources: resources.into_iter().map(|r| r.1).collect() }
+    scenery.sort_by(|a, b| a.0.cmp(&b.0));
+    NoiseMapGen {
+        inputs,
+        constants,
+        tiles,
+        resources: resources.into_iter().map(|r| r.1).collect(),
+        entities: scenery.into_iter().map(|r| r.1).collect(),
+    }
 }
 
 /// [`default_mapgen`] with the planet's noise-expression terrain.

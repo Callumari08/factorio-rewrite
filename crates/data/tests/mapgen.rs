@@ -36,3 +36,28 @@ fn nauvis_expressions_compile_and_generate_deterministically() {
     let t = a.tile(TilePosition::new(0, 0)).unwrap();
     assert!(t != water && t != deep);
 }
+
+#[test]
+fn trees_and_rocks_are_generated_as_minable_entities() {
+    use factorio_sim::input::{InputAction, PlayerInput};
+    use factorio_sim::proto::ItemOrFluid;
+    use factorio_sim::world::{EntityState, Simulation};
+    let Ok(config) = factorio_data::Config::load() else { return };
+    let Ok(data) = factorio_data::load_game_data(&config) else { return };
+    let db = std::sync::Arc::new(factorio_data::typed::build_prototype_db(&data).unwrap());
+    let mut sim = Simulation::new(db.clone(), factorio_data::mapgen::planet_mapgen(&data, &db, 1));
+    sim.step(&[PlayerInput::new(0, InputAction::JoinGame)]);
+    let mut kinds = std::collections::BTreeMap::new();
+    for (_, e) in sim.entities() {
+        if let EntityState::Static { .. } = e.state {
+            *kinds.entry(db.entity(e.proto).kind.clone()).or_insert(0) += 1;
+        }
+    }
+    assert!(kinds.get("tree").copied().unwrap_or(0) > 100, "{kinds:?}");
+    assert!(kinds.get("simple-entity").copied().unwrap_or(0) > 0, "{kinds:?}");
+    // Trees give wood when mined.
+    let tree = sim.entities().find(|(_, e)| db.entity(e.proto).kind == "tree").unwrap().1;
+    let wood = db.item_id("wood").unwrap();
+    let results = &db.entity(tree.proto).minable.as_ref().unwrap().results;
+    assert!(results.iter().any(|r| r.what == ItemOrFluid::Item(wood)));
+}

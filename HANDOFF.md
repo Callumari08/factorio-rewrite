@@ -26,12 +26,14 @@ Read this first when picking the project up in a new session. See also
   It is the default (`FACTORIO_REWRITE_SIMPLE_MAPGEN=1` gives the old generator). Spot
   noise regions are centred on the origin, which keeps each starting patch whole. Chunks
   beyond the character's neighbours generate one per tick. `cargo run --release -p
-  factorio-data --example mapimage -- map.ppm 24 [seed]` renders a map for checking. Still
-  to do: trees, rocks, decoratives, cliffs, tile transitions, crude oil.
-  Factorio's basis noise algorithm is not public; ours is gradient noise with its amplitude
-  calibrated (`BASIS_AMPLITUDE`), and the octave conventions of `multioctave_noise` are
-  inferred from how the base expressions use them, so maps follow the game's rules but not
-  its seeds. Moisture varies a lot between seeds (some spawn in dirt or desert).
+  factorio-data --example mapimage -- map.ppm 24 [seed]` renders a map for checking.
+  Trees and rocks are generated (`EntityState::Static`, minable, collidable; trees come
+  from the `trees` autoplace control). The renderer now only mirrors on-screen entities.
+  Still to do: decoratives, cliffs, tile transitions, fish, crude oil, enemies.
+  Factorio's basis noise algorithm is not public; ours is gradient noise scaled to about
+  -1..1 (`BASIS_AMPLITUDE`), and `multioctave_noise`'s loudness (`MULTIOCTAVE_GAIN` = 3) is
+  calibrated so lakes cover 10-20% of the map, so maps follow the game's rules but not its
+  seeds. Moisture varies a lot between seeds (some spawn in dirt or sand).
 - All tests pass: `cargo test --workspace` (sim unit tests, plus gameplay tests in
   `crates/data/tests/` that load the real game and check values such as tick timings and
   throughputs).

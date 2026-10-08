@@ -74,14 +74,19 @@ fn binary(op: BinOp, a: f32, b: f32) -> f32 {
     }
 }
 
+/// How much louder the game's `multioctave_noise` is than a plain octave sum. Not
+/// documented; calibrated so Nauvis's elevation expressions put lakes on 10-20% of the map
+/// (with 1, almost none appear).
+const MULTIOCTAVE_GAIN: f32 = 3.0;
+
 /// Amplitude and input scale of the largest octave of (variable persistence) multioctave
 /// noise; each following octave has twice the frequency and `persistence` times the
 /// amplitude.
 fn multioctave_start(op: &Op, p: &NoiseParams) -> (f32, f32) {
     // The game's `amplitude_corrected_multioctave_noise` divides by 2^octaves times the sum
     // of the persistence series, so variable persistence noise starts 2^octaves louder.
-    let vp = matches!(op, Op::VariablePersistence(_));
-    (p.output_scale * if vp { pow_int(2.0, p.octaves as i32) } else { 1.0 }, p.input_scale)
+    let gain = if matches!(op, Op::VariablePersistence(_)) { pow_int(2.0, p.octaves as i32) } else { MULTIOCTAVE_GAIN };
+    (gain * p.output_scale, p.input_scale)
 }
 
 /// Octave sums. `persistence` is per point for variable-persistence noise.

@@ -330,6 +330,62 @@ pub fn underground_sprite(data: &GameData, name: &str, dir: usize, input: bool) 
 pub enum LayerKind {
     Normal,
     Shadow,
+    /// Drawn multiplied by a colour (tree leaves).
+    Tinted([u8; 4]),
+}
+
+/// The picture of a tree, rock or other scenery entity in one of its variations: a tree's
+/// shadow, trunk and tinted leaves, or a rock's picture.
+pub fn scenery_layers(data: &GameData, name: &str, variation: usize) -> Vec<(SpriteRef, LayerKind)> {
+    let Some((kind, _, proto)) = data.prototypes_in_category("entity").find(|(_, n, _)| *n == name) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let add = |node: &RawValue, tint: Option<[u8; 4]>, out: &mut Vec<(SpriteRef, LayerKind)>| {
+        let mut nodes = Vec::new();
+        collect_layers(node, 0, &mut nodes);
+        for (layer, _) in nodes {
+            if layer.get("draw_as_light").as_bool() == Some(true) || layer.get("draw_as_glow").as_bool() == Some(true) {
+                continue;
+            }
+            let kind = if layer.get("draw_as_shadow").as_bool() == Some(true) {
+                LayerKind::Shadow
+            } else {
+                tint.map_or(LayerKind::Normal, LayerKind::Tinted)
+            };
+            if let Some(s) = layer_frame(data, layer, 0, 0) {
+                out.push((s, kind));
+            }
+        }
+    };
+    if kind == "tree" {
+        let variations = proto.get("variations").as_array();
+        if let Some(v) = variations.get(variation % variations.len().max(1)) {
+            let colors = proto.get("colors").as_array();
+            let tint = colors.get(variation % colors.len().max(1)).map(|c| {
+                let ch = |i: usize, k: &str| {
+                    let x = c.at(i).as_f64().or(c.get(k).as_f64()).unwrap_or(1.0);
+                    (if x > 1.0 { x } else { x * 255.0 }).round().clamp(0.0, 255.0) as u8
+                };
+                [ch(0, "r"), ch(1, "g"), ch(2, "b"), 255]
+            });
+            add(v.get("shadow"), None, &mut out);
+            add(v.get("trunk"), None, &mut out);
+            add(v.get("leaves"), tint, &mut out);
+        }
+        if out.is_empty() {
+            add(proto.get("pictures"), None, &mut out);
+        }
+    } else {
+        let pictures = proto.get("pictures");
+        let list = pictures.as_array();
+        if list.is_empty() {
+            add(if pictures.is_nil() { proto.get("picture") } else { pictures }, None, &mut out);
+        } else {
+            add(&list[variation % list.len()], None, &mut out);
+        }
+    }
+    out
 }
 
 /// Picks the animation frame shown at `t` (in ticks) for a layer.

@@ -83,6 +83,8 @@ pub struct Surface {
     generator: Option<crate::mapgen::GeneratorState>,
     /// Why the noise expressions could not be compiled, if they could not.
     pub noise_error: Option<String>,
+    /// Trees and rocks from freshly generated chunks, for the world to add.
+    placed: Vec<crate::mapgen::PlacedEntity>,
 }
 
 impl Surface {
@@ -96,7 +98,7 @@ impl Surface {
             Some(Err(e)) => (None, Some(e)),
             None => (None, None),
         };
-        Surface { settings, chunks: BTreeMap::new(), starting_patches, generator, noise_error }
+        Surface { settings, chunks: BTreeMap::new(), starting_patches, generator, noise_error, placed: Vec::new() }
     }
 
     pub fn chunks(&self) -> impl Iterator<Item = (ChunkPosition, &Chunk)> {
@@ -116,6 +118,11 @@ impl Surface {
         let chunk = self.generate(c);
         self.chunks.insert(c, chunk);
         true
+    }
+
+    /// Entities placed by generation since the last call, in generation order.
+    pub fn take_placed_entities(&mut self) -> Vec<crate::mapgen::PlacedEntity> {
+        std::mem::take(&mut self.placed)
     }
 
     pub fn tile(&self, t: TilePosition) -> Option<TileId> {
@@ -154,6 +161,7 @@ impl Surface {
     fn generate(&mut self, c: ChunkPosition) -> Chunk {
         if let Some(g) = &mut self.generator {
             let terrain = g.generator.clone().generate(&mut g.spots, c);
+            self.placed.extend(terrain.entities);
             return Chunk {
                 tiles: terrain.tiles,
                 resources: terrain

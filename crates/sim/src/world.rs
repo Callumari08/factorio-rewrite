@@ -47,6 +47,10 @@ pub enum EntityState {
     Pole,
     Fluid(FluidEntity),
     Lab(LabState),
+    /// Trees, rocks and other scenery: which picture variation to draw.
+    Static {
+        variation: u8,
+    },
 }
 
 /// Something that happened during a tick, for sounds and visual effects. Events are not
@@ -227,6 +231,27 @@ impl Simulation {
                 self.surface.ensure_chunk(ChunkPosition { x, y });
             }
         }
+        self.add_generated_entities();
+    }
+
+    /// Adds the trees and rocks of newly generated chunks, skipping any that would overlap
+    /// something already there (for example a rock reaching into a built-on chunk).
+    fn add_generated_entities(&mut self) {
+        for p in self.surface.take_placed_entities() {
+            let proto = self.db.entity(p.entity);
+            let position = MapPosition::new(p.x, p.y);
+            let fp = Self::footprint(proto, position, Direction::NORTH);
+            if !self.entities_in(fp).is_empty() {
+                continue;
+            }
+            let id = EntityId(self.next_entity_id);
+            self.next_entity_id += 1;
+            for t in fp.tiles() {
+                self.tile_index.insert(t, id);
+            }
+            let state = EntityState::Static { variation: p.variation };
+            self.entities.insert(id, Entity { proto: p.entity, position, direction: Direction::NORTH, state });
+        }
     }
 
     /// Per tick: the chunks next to `p` at once, and at most [`CHUNKS_PER_TICK`] further
@@ -252,6 +277,7 @@ impl Simulation {
             }
             self.surface.ensure_chunk(pos);
         }
+        self.add_generated_entities();
     }
 
     fn apply_input(&mut self, input: &PlayerInput) {
@@ -334,7 +360,10 @@ impl Simulation {
         self.tile_index.get(&t).copied()
     }
 
+    /// The tiles an entity occupies. Entities placed off the tile grid (trees) occupy the
+    /// tiles their snapped position would.
     pub fn footprint(proto: &EntityProto, position: MapPosition, direction: Direction) -> Area {
+        let position = proto.snap_position(position, direction);
         let (w, h) = proto.tile_size(direction);
         let half_w = w * SUBTILES_PER_TILE / 2;
         let half_h = h * SUBTILES_PER_TILE / 2;

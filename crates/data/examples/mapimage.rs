@@ -23,10 +23,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     eprintln!("compiled in {:.2?}", start.elapsed());
     let start = Instant::now();
+    let mut placed = Vec::new();
     for cy in -r..r {
         for cx in -r..r {
             surface.ensure_chunk(ChunkPosition { x: cx, y: cy });
+            placed.extend(surface.take_placed_entities());
         }
+    }
+    let mut scenery = std::collections::HashMap::new();
+    for p in &placed {
+        scenery.insert((p.x.div_euclid(256), p.y.div_euclid(256)), p.entity);
     }
     let n = (2 * r * r * 2) as f64;
     eprintln!(
@@ -56,6 +62,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "uranium-ore" => [0, 230, 0],
                     _ => [255, 0, 255],
                 };
+            }
+            if let Some(e) = scenery.get(&(t.x, t.y)) {
+                let name = &db.entity(*e).name;
+                *counts.entry(format!("[{}]", db.entity(*e).kind)).or_default() += 1;
+                c = if db.entity(*e).kind == "tree" { [20, 60, 20] } else { [120, 120, 120] };
+                let _ = name;
             }
             if x == size / 2 || y == size / 2 {
                 c = [255, 255, 255];

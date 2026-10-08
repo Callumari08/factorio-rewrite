@@ -38,6 +38,34 @@ pub struct ResourceAutoplace {
     pub richness: Option<NoiseDef>,
 }
 
+/// A tree, rock or other entity placed by map generation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EntityAutoplace {
+    pub entity: EntityProtoId,
+    pub probability: NoiseDef,
+    /// Entities with the same order compete: only the most probable is tried on a tile.
+    pub order: String,
+    /// Placement attempts per tile.
+    pub placement_density: u32,
+    /// Tiles it may be placed on (from collision masks and `tile_restriction`).
+    pub allowed_tiles: Vec<bool>,
+    /// May sit anywhere within its tile (`placeable-off-grid`).
+    pub off_grid: bool,
+    /// Keeps this many tiles from other generated entities (`map_generator_bounding_box`).
+    pub spacing: i32,
+    /// Number of picture variations to choose from.
+    pub variations: u8,
+}
+
+/// An entity the generator placed: position in 1/256 tiles.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlacedEntity {
+    pub entity: EntityProtoId,
+    pub x: i32,
+    pub y: i32,
+    pub variation: u8,
+}
+
 /// Everything needed to generate a planet's terrain from noise expressions.
 #[derive(Clone, Debug, PartialEq)]
 pub struct NoiseMapGen {
@@ -47,6 +75,8 @@ pub struct NoiseMapGen {
     pub tiles: Vec<TileAutoplace>,
     /// Resources in placement order (`order`, then name).
     pub resources: Vec<ResourceAutoplace>,
+    /// Trees, rocks and other entities in placement order.
+    pub entities: Vec<EntityAutoplace>,
 }
 
 impl Eq for NoiseMapGen {}
@@ -57,6 +87,8 @@ pub struct Generator {
     program: Program,
     tiles: Vec<(TileId, NodeId, bool)>,
     resources: Vec<(EntityProtoId, NodeId, NodeId)>,
+    /// Groups of entities sharing an order string, each with its probability.
+    entity_groups: Vec<Vec<(EntityAutoplace, NodeId)>>,
     seed: u32,
 }
 
@@ -65,6 +97,7 @@ pub struct ChunkTerrain {
     pub tiles: Vec<TileId>,
     /// Resource and amount per tile.
     pub resources: Vec<Option<(EntityProtoId, u32)>>,
+    pub entities: Vec<PlacedEntity>,
 }
 
 impl Generator {
@@ -84,8 +117,16 @@ impl Generator {
             };
             resources.push((r.resource, p, rich));
         }
+        let mut entity_groups: Vec<Vec<(EntityAutoplace, NodeId)>> = Vec::new();
+        for e in &settings.entities {
+            let p = c.compile(&e.probability).map_err(|err| format!("entity {}: {err}", e.entity.0))?;
+            match entity_groups.last_mut() {
+                Some(g) if g[0].0.order == e.order => g.push((e.clone(), p)),
+                _ => entity_groups.push(vec![(e.clone(), p)]),
+            }
+        }
         let seed = settings.constants.numbers.get("map_seed").copied().unwrap_or(0.0) as u32;
-        Ok(Generator { program: c.program, tiles, resources, seed })
+        Ok(Generator { program: c.program, tiles, resources, entity_groups, seed })
     }
 
     pub fn node_count(&self) -> usize {
@@ -107,6 +148,10 @@ impl Generator {
         for r in &self.resources {
             roots.push(r.1);
             roots.push(r.2);
+        }
+        let entity_base = roots.len();
+        for g in &self.entity_groups {
+            roots.extend(g.iter().map(|e| e.1));
         }
         let mut ev = Evaluator { program: &self.program, spots: cache };
         let values = ev.eval(&roots, &xs, &ys);
@@ -143,7 +188,90 @@ impl Generator {
                 }
             }
         }
-        ChunkTerrain { tiles, resources }
+        let entities = self.place_entities(&values[entity_base..], &tiles, first);
+        ChunkTerrain { tiles, resources, entities }
+    }
+
+    fn unit(&self, a: u32, b: u32, c: u32, d: u32) -> f32 {
+        (basis::hash4(self.seed ^ a, b, c, d) >> 8) as f32 / (1u32 << 24) as f32
+    }
+
+    /// Trees and rocks: on each tile, for each order group, the most probable entity gets
+    /// `placement_density` chances of `probability`. At most one per tile, and none within
+    /// another's `map_generator_bounding_box`.
+    fn place_entities(
+        &self,
+        values: &[Vec<f32>],
+        tiles: &[TileId],
+        first: crate::map::TilePosition,
+    ) -> Vec<PlacedEntity> {
+        let n = CHUNK_SIZE as usize;
+        let mut taken = vec![false; n * n];
+        let mut out = Vec::new();
+        let mut col = 0;
+        let mut group_cols = Vec::new();
+        for g in &self.entity_groups {
+            group_cols.push(col);
+            col += g.len();
+        }
+        for i in 0..n * n {
+            let (lx, ly) = ((i % n) as i32, (i / n) as i32);
+            let (tx, ty) = (first.x + lx, first.y + ly);
+            for (gi, g) in self.entity_groups.iter().enumerate() {
+                if taken[i] {
+                    break;
+                }
+                let base = group_cols[gi];
+                let mut best = 0;
+                for k in 1..g.len() {
+                    if values[base + k][i] > values[base + best][i] {
+                        best = k;
+                    }
+                }
+                let (e, _) = &g[best];
+                let p = values[base + best][i];
+                if !eval::positive(p) || !e.allowed_tiles.get(tiles[i].index()).copied().unwrap_or(false) {
+                    continue;
+                }
+                let placed = (0..e.placement_density.max(1))
+                    .any(|attempt| self.unit(e.entity.0 as u32, tx as u32, ty as u32, attempt) < p);
+                if !placed {
+                    continue;
+                }
+                // Keep clear of entities already placed in this chunk.
+                let r = e.spacing;
+                let clear = (-r..=r).all(|dy| {
+                    (-r..=r).all(|dx| {
+                        let (x, y) = (lx + dx, ly + dy);
+                        !(0..n as i32).contains(&x)
+                            || !(0..n as i32).contains(&y)
+                            || !taken[y as usize * n + x as usize]
+                    })
+                });
+                if !clear {
+                    continue;
+                }
+                let sub = crate::map::SUBTILES_PER_TILE;
+                let (x, y) = if e.off_grid {
+                    // Anywhere in the middle half of the tile.
+                    let jx = (self.unit(1, tx as u32, ty as u32, e.entity.0 as u32) * (sub / 2) as f32) as i32;
+                    let jy = (self.unit(2, tx as u32, ty as u32, e.entity.0 as u32) * (sub / 2) as f32) as i32;
+                    (tx * sub + sub / 4 + jx, ty * sub + sub / 4 + jy)
+                } else {
+                    (tx * sub + sub / 2, ty * sub + sub / 2)
+                };
+                let variation =
+                    (self.unit(3, tx as u32, ty as u32, e.entity.0 as u32) * e.variations.max(1) as f32) as u8;
+                out.push(PlacedEntity {
+                    entity: e.entity,
+                    x,
+                    y,
+                    variation: variation.min(e.variations.saturating_sub(1)),
+                });
+                taken[i] = true;
+            }
+        }
+        out
     }
 }
 
