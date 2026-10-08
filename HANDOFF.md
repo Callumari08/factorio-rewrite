@@ -80,11 +80,11 @@ Read this first when picking the project up in a new session. See also
   game data (`defines.prototypes`, collision mask defaults, locale) so Space Age/mods work.
 - **Never commit game data.** Everything is read from the user's install at runtime.
 - **Parity is tested** against known game values; add a test for each mechanic.
-- **Windows on Callum's desktop: ask first.** Before launching any visible window (the real
-  Factorio for reference captures, or our game's screenshot runs), ask in the thread and
-  wait for an explicit go-ahead; a heads-up is not enough. Batch captures to ask rarely.
-  Prefer offscreen captures (`FACTORIO_REWRITE_OFFSCREEN=1`, renders to an image with the
-  window hidden), which need no permission.
+- **Real Factorio: ask first.** Launching the real game (reference captures with
+  `--load-scenario`, which opens Steam and needs Callum's input) needs his explicit
+  go-ahead in the thread each time; batch captures. Our own game's screenshot runs
+  (`FACTORIO_REWRITE_SCREENSHOT=...png FACTORIO_REWRITE_SCREENSHOT_AFTER=4`) are fine
+  without asking; keep them brief. Map previews (`--generate-map-preview`) open no window.
 - Send Callum short progress notes every few minutes during long work; small commits,
   pushed to `main`.
 
