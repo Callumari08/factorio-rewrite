@@ -86,7 +86,7 @@ struct Masks {
 
 impl Terrain {
     fn masks(&mut self, data: &Data, sim: &Sim, tile: TileId) -> Option<&Masks> {
-        if !self.masks.contains_key(&tile) {
+        if let std::collections::hash_map::Entry::Vacant(slot) = self.masks.entry(tile) {
             let name = sim.0.prototypes().tile(tile).name.clone();
             let loaded = factorio_data::sprite::tile_transition(&data.0, &name).and_then(|t| {
                 let img = image::open(&t.sheet).ok()?.to_luma8();
@@ -113,7 +113,7 @@ impl Terrain {
                     o: cut(t.o_transition),
                 })
             });
-            self.masks.insert(tile, loaded);
+            slot.insert(loaded);
         }
         self.masks[&tile].as_ref()
     }
