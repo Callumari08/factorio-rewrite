@@ -36,6 +36,8 @@ pub struct ResourceAutoplace {
     pub resource: EntityProtoId,
     pub probability: NoiseDef,
     pub richness: Option<NoiseDef>,
+    /// Resources with the same order compete: only the most probable is tried on a tile.
+    pub order: String,
 }
 
 /// A tree, rock or other entity placed by map generation.
@@ -136,6 +138,7 @@ pub struct Generator {
     program: Program,
     tiles: Vec<(TileId, NodeId, bool)>,
     resources: Vec<(EntityProtoId, NodeId, NodeId)>,
+    resource_orders: Vec<String>,
     /// Groups of entities sharing an order string, each with its probability.
     entity_groups: Vec<Vec<(EntityAutoplace, NodeId)>>,
     decoratives: Vec<(DecorativeAutoplace, NodeId)>,
@@ -195,7 +198,18 @@ impl Generator {
         let number = |k: &str, d: f64| settings.constants.numbers.get(k).copied().unwrap_or(d) as f32;
         let cliff_levels = (number("cliff_elevation_0", 10.0), number("cliff_elevation_interval", 40.0));
         let seed = settings.constants.numbers.get("map_seed").copied().unwrap_or(0.0) as u32;
-        Ok(Generator { program: c.program, tiles, resources, entity_groups, decoratives, cliffs, cliff_levels, seed })
+        let resource_orders = settings.resources.iter().map(|r| r.order.clone()).collect();
+        Ok(Generator {
+            program: c.program,
+            tiles,
+            resources,
+            resource_orders,
+            entity_groups,
+            decoratives,
+            cliffs,
+            cliff_levels,
+            seed,
+        })
     }
 
     pub fn node_count(&self) -> usize {
@@ -239,8 +253,18 @@ impl Generator {
             if self.tiles.get(best).is_some_and(|t| t.2) {
                 continue;
             }
-            for (k, (resource, _, _)) in self.resources.iter().enumerate() {
-                let p = values[self.tiles.len() + 2 * k][i];
+            let mut k = 0;
+            while k < self.resources.len() {
+                // The group of resources sharing this one's order: its most probable member.
+                let order = &self.resource_orders[k];
+                let end = (k..self.resources.len())
+                    .find(|j| &self.resource_orders[*j] != order)
+                    .unwrap_or(self.resources.len());
+                let prob = |j: usize| values[self.tiles.len() + 2 * j][i];
+                let best = (k..end).max_by(|a, b| prob(*a).total_cmp(&prob(*b)).then(b.cmp(a))).unwrap();
+                k = end;
+                let resource = &self.resources[best].0;
+                let p = prob(best);
                 if !eval::positive(p) {
                     continue;
                 }
@@ -250,7 +274,7 @@ impl Generator {
                 if roll >= p {
                     continue;
                 }
-                let amount = values[self.tiles.len() + 2 * k + 1][i];
+                let amount = values[self.tiles.len() + 2 * best + 1][i];
                 if amount >= 1.0 {
                     resources[i] = Some((*resource, amount.min(u32::MAX as f32) as u32));
                     break;

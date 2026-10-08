@@ -231,7 +231,7 @@ pub fn noise_mapgen(data: &GameData, db: &PrototypeDb, planet: &str, seed: u64) 
             proto.minable.as_ref().is_some_and(|m| m.results.iter().all(|r| matches!(r.what, ItemOrFluid::Item(_))));
         let order = raw.get("autoplace").get("order").as_str().unwrap_or("").to_owned();
         if kind == "resource" && solid {
-            resources.push((order + &name, ResourceAutoplace { resource: e, probability, richness }));
+            resources.push((order.clone() + &name, ResourceAutoplace { resource: e, probability, richness, order }));
         } else if matches!(kind, "tree" | "simple-entity") {
             let a = raw.get("autoplace");
             let restriction: Vec<&str> =

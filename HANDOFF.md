@@ -38,7 +38,12 @@ Read this first when picking the project up in a new session. See also
   The world generates 7 chunks around each character (3 at once, the rest one per tick).
   Reference maps: `<factorio>/bin/x64/factorio --generate-map-preview out.png
   --map-gen-seed N --report-quantities iron-ore,...` gives the real game's map and ore
-  totals for calibration.
+  totals for calibration. Over seeds 1-6 (1024x1024 tiles), ours vs the game: ore tile
+  counts match (about 8000 vs 8400) but total richness is about 73% of the game's (iron
+  about half, others 80-90%), with large per-seed variance because each 1024-tile spot
+  region's target comes from density sampled at its candidate points. Starting patches
+  sit 50-100 tiles from spawn in both. Terrain shape is the big remaining difference
+  (the game's is much smoother: large regions and seas, few small lakes).
   Decoratives are generated on demand by the client (`Surface::decoratives`, not game
   state) and painted into the chunk ground textures; building does not remove them yet.
   Cliffs: marching squares over `cliff_elevation` on the cliff's 4x4 grid where
