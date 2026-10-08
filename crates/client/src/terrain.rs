@@ -41,6 +41,11 @@ struct Terrain {
     textures: HashMap<TileId, Vec<Vec<u8>>>,
     /// Downscaled transition masks per tile (`None` for tiles without any).
     masks: HashMap<TileId, Option<Masks>>,
+    /// Decorative pictures scaled to PX per tile, with their offset from the position.
+    decoratives: HashMap<(u16, u8), Option<(image::RgbaImage, i32, i32)>>,
+    /// Decoratives per chunk, kept so neighbouring chunks can draw the parts that reach
+    /// over their edge.
+    placed: HashMap<ChunkPosition, Vec<factorio_sim::mapgen::PlacedDecorative>>,
     files: HashMap<std::path::PathBuf, Option<image::RgbaImage>>,
     frame: u32,
 }
@@ -226,6 +231,59 @@ fn build_chunks(
                     let src = (py * PX * 4) as usize;
                     let dst = (((ty as u32 * PX + py) * size + tx as u32 * PX) * 4) as usize;
                     pixels[dst..dst + (PX * 4) as usize].copy_from_slice(&cell[src..src + (PX * 4) as usize]);
+                }
+            }
+        }
+        // Decoratives are painted onto the ground.
+        let names: Vec<String> = sim
+            .0
+            .surface
+            .settings
+            .noise
+            .as_ref()
+            .map(|n| n.decoratives.iter().map(|d| d.name.clone()).collect())
+            .unwrap_or_default();
+        let mut nearby = Vec::new();
+        for dy in -1..=1 {
+            for dx in -1..=1 {
+                let n = ChunkPosition { x: c.x + dx, y: c.y + dy };
+                nearby.extend(terrain.placed.entry(n).or_insert_with(|| sim.0.surface.decoratives(n)).iter().copied());
+            }
+        }
+        for d in nearby {
+            let Some(name) = names.get(d.decorative as usize) else { continue };
+            let t = &mut *terrain;
+            let files = &mut t.files;
+            let pic = t.decoratives.entry((d.decorative, d.variation)).or_insert_with(|| {
+                let s = factorio_data::sprite::decorative_sprite(&data.0, name, d.variation as usize)?;
+                let img = files
+                    .entry(s.path.clone())
+                    .or_insert_with(|| image::open(&s.path).ok().map(|i| i.to_rgba8()))
+                    .as_ref()?;
+                if s.x + s.width > img.width() || s.y + s.height > img.height() {
+                    return None;
+                }
+                let k = s.scale as f32 * PX as f32 / 32.0;
+                let (w, h) =
+                    (((s.width as f32 * k).round() as u32).max(1), ((s.height as f32 * k).round() as u32).max(1));
+                let crop = image::imageops::crop_imm(img, s.x, s.y, s.width, s.height).to_image();
+                let small = image::imageops::resize(&crop, w, h, image::imageops::FilterType::Triangle);
+                let ox = (s.shift.0 as f32 * PX as f32) as i32 - w as i32 / 2;
+                let oy = (s.shift.1 as f32 * PX as f32) as i32 - h as i32 / 2;
+                Some((small, ox, oy))
+            });
+            let Some((pic, ox, oy)) = pic else { continue };
+            let px = (d.x - first.x * 256) * PX as i32 / 256 + *ox;
+            let py = (d.y - first.y * 256) * PX as i32 / 256 + *oy;
+            for (x, y, p) in pic.enumerate_pixels() {
+                let (dx, dy) = (px + x as i32, py + y as i32);
+                if dx < 0 || dy < 0 || dx >= size as i32 || dy >= size as i32 || p[3] == 0 {
+                    continue;
+                }
+                let i = ((dy as u32 * size + dx as u32) * 4) as usize;
+                let a = p[3] as u32;
+                for ch in 0..3 {
+                    pixels[i + ch] = ((pixels[i + ch] as u32 * (255 - a) + p[ch] as u32 * a) / 255) as u8;
                 }
             }
         }

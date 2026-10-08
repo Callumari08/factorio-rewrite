@@ -120,6 +120,14 @@ impl Surface {
         true
     }
 
+    /// The decoratives of a generated chunk (computed on demand; not game state).
+    pub fn decoratives(&self, c: ChunkPosition) -> Vec<crate::mapgen::PlacedDecorative> {
+        match (&self.generator, self.chunks.get(&c)) {
+            (Some(g), Some(chunk)) => g.generator.decoratives(c, &chunk.tiles),
+            _ => Vec::new(),
+        }
+    }
+
     /// Entities placed by generation since the last call, in generation order.
     pub fn take_placed_entities(&mut self) -> Vec<crate::mapgen::PlacedEntity> {
         std::mem::take(&mut self.placed)

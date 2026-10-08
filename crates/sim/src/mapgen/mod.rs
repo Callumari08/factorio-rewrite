@@ -57,6 +57,29 @@ pub struct EntityAutoplace {
     pub variations: u8,
 }
 
+/// A decorative (grass tuft, decal, small rock): drawn on the ground only, so it is not
+/// game state; the client asks for a chunk's decoratives when it draws it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DecorativeAutoplace {
+    pub name: String,
+    pub probability: NoiseDef,
+    pub order: String,
+    pub placement_density: u32,
+    pub allowed_tiles: Vec<bool>,
+    /// Keeps this many tiles from another of the same decorative (`collision_box`).
+    pub spacing: i32,
+    pub variations: u8,
+}
+
+/// A placed decorative: index into the settings' decoratives, position in 1/256 tiles.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlacedDecorative {
+    pub decorative: u16,
+    pub x: i32,
+    pub y: i32,
+    pub variation: u8,
+}
+
 /// An entity the generator placed: position in 1/256 tiles.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PlacedEntity {
@@ -77,6 +100,8 @@ pub struct NoiseMapGen {
     pub resources: Vec<ResourceAutoplace>,
     /// Trees, rocks and other entities in placement order.
     pub entities: Vec<EntityAutoplace>,
+    /// Decoratives in placement order.
+    pub decoratives: Vec<DecorativeAutoplace>,
 }
 
 impl Eq for NoiseMapGen {}
@@ -89,6 +114,7 @@ pub struct Generator {
     resources: Vec<(EntityProtoId, NodeId, NodeId)>,
     /// Groups of entities sharing an order string, each with its probability.
     entity_groups: Vec<Vec<(EntityAutoplace, NodeId)>>,
+    decoratives: Vec<(DecorativeAutoplace, NodeId)>,
     seed: u32,
 }
 
@@ -125,8 +151,13 @@ impl Generator {
                 _ => entity_groups.push(vec![(e.clone(), p)]),
             }
         }
+        let mut decoratives = Vec::new();
+        for d in &settings.decoratives {
+            let p = c.compile(&d.probability).map_err(|err| format!("decorative {}: {err}", d.name))?;
+            decoratives.push((d.clone(), p));
+        }
         let seed = settings.constants.numbers.get("map_seed").copied().unwrap_or(0.0) as u32;
-        Ok(Generator { program: c.program, tiles, resources, entity_groups, seed })
+        Ok(Generator { program: c.program, tiles, resources, entity_groups, decoratives, seed })
     }
 
     pub fn node_count(&self) -> usize {
@@ -190,6 +221,76 @@ impl Generator {
         }
         let entities = self.place_entities(&values[entity_base..], &tiles, first);
         ChunkTerrain { tiles, resources, entities }
+    }
+
+    /// The decoratives of a chunk whose tiles are `tiles`. Like entities, decoratives
+    /// sharing an order compete for a tile; each keeps clear of its own kind.
+    pub fn decoratives(&self, c: ChunkPosition, tiles: &[TileId]) -> Vec<PlacedDecorative> {
+        if self.decoratives.is_empty() {
+            return Vec::new();
+        }
+        let first = c.first_tile();
+        let n = CHUNK_SIZE as usize;
+        let mut xs = Vec::with_capacity(n * n);
+        let mut ys = Vec::with_capacity(n * n);
+        for dy in 0..CHUNK_SIZE {
+            for dx in 0..CHUNK_SIZE {
+                xs.push((first.x + dx) as f32);
+                ys.push((first.y + dy) as f32);
+            }
+        }
+        let roots: Vec<NodeId> = self.decoratives.iter().map(|d| d.1).collect();
+        let mut cache = SpotCache::new();
+        let values = Evaluator { program: &self.program, spots: &mut cache }.eval(&roots, &xs, &ys);
+        let mut taken = vec![vec![false; n * n]; self.decoratives.len()];
+        let mut out = Vec::new();
+        let sub = crate::map::SUBTILES_PER_TILE;
+        for i in 0..n * n {
+            let (lx, ly) = ((i % n) as i32, (i / n) as i32);
+            let (tx, ty) = (first.x + lx, first.y + ly);
+            let mut k = 0;
+            while k < self.decoratives.len() {
+                // The group of decoratives sharing this one's order.
+                let order = &self.decoratives[k].0.order;
+                let end = (k..self.decoratives.len())
+                    .find(|j| &self.decoratives[*j].0.order != order)
+                    .unwrap_or(self.decoratives.len());
+                let best = (k..end).max_by(|a, b| values[*a][i].total_cmp(&values[*b][i]).then(b.cmp(a))).unwrap();
+                k = end;
+                let (d, _) = &self.decoratives[best];
+                let p = values[best][i];
+                if !eval::positive(p) || !d.allowed_tiles.get(tiles[i].index()).copied().unwrap_or(false) {
+                    continue;
+                }
+                let r = d.spacing;
+                let clear = (-r..=r).all(|dy| {
+                    (-r..=r).all(|dx| {
+                        let (x, y) = (lx + dx, ly + dy);
+                        !(0..n as i32).contains(&x)
+                            || !(0..n as i32).contains(&y)
+                            || !taken[best][y as usize * n + x as usize]
+                    })
+                });
+                if !clear {
+                    continue;
+                }
+                let salt = 0x0dec_0000 + best as u32;
+                if !(0..d.placement_density.max(1)).any(|a| self.unit(salt, tx as u32, ty as u32, a) < p) {
+                    continue;
+                }
+                let jx = (self.unit(salt ^ 1, tx as u32, ty as u32, 9) * sub as f32) as i32;
+                let jy = (self.unit(salt ^ 2, tx as u32, ty as u32, 9) * sub as f32) as i32;
+                let variation = (self.unit(salt ^ 3, tx as u32, ty as u32, 9) * d.variations.max(1) as f32) as u8;
+                out.push(PlacedDecorative {
+                    decorative: best as u16,
+                    x: tx * sub + jx,
+                    y: ty * sub + jy,
+                    variation: variation.min(d.variations.saturating_sub(1)),
+                });
+                taken[best][i] = true;
+            }
+        }
+        out
     }
 
     fn unit(&self, a: u32, b: u32, c: u32, d: u32) -> f32 {

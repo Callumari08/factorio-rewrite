@@ -317,6 +317,17 @@ pub fn tile_variants(data: &GameData, name: &str) -> Vec<SpriteRef> {
         .collect()
 }
 
+/// One picture of a decorative (its `pictures[variation]`, first non-shadow layer).
+pub fn decorative_sprite(data: &GameData, name: &str, variation: usize) -> Option<SpriteRef> {
+    let pictures = data.prototype("optimized-decorative", name).get("pictures");
+    let list = pictures.as_array();
+    let pic = if list.is_empty() { pictures } else { &list[variation % list.len()] };
+    let mut nodes = Vec::new();
+    collect_layers(pic, 0, &mut nodes);
+    let layer = nodes.iter().find(|(l, _)| l.get("draw_as_shadow").as_bool() != Some(true))?.0;
+    layer_frame(data, layer, 0, 0)
+}
+
 /// One kind of transition piece in a tile's mask sheet: its x offset and variant count.
 /// Each variant is a column of four rotations (north, east, south, west).
 #[derive(Clone, Copy, Debug, PartialEq)]

@@ -8,7 +8,8 @@
 use std::collections::BTreeMap;
 
 use factorio_sim::mapgen::{
-    Constants, EntityAutoplace, NoiseDef, NoiseInputs, NoiseMapGen, ResourceAutoplace, TileAutoplace,
+    Constants, DecorativeAutoplace, EntityAutoplace, NoiseDef, NoiseInputs, NoiseMapGen, ResourceAutoplace,
+    TileAutoplace,
 };
 use factorio_sim::proto::{EntityData, ItemOrFluid, PrototypeDb, TileId};
 use factorio_sim::surface::{LandTileRule, MapGenSettings, ResourceRule};
@@ -272,7 +273,57 @@ pub fn noise_mapgen(data: &GameData, db: &PrototypeDb, planet: &str, seed: u64) 
     }
     resources.sort_by(|a, b| a.0.cmp(&b.0));
     scenery.sort_by(|a, b| a.0.cmp(&b.0));
+
+    // Decoratives: drawn on the ground, kept off tiles that collide with their mask
+    // (`doodad` by default, which water has).
+    let doodad = db.collision_layers.iter().position(|l| l == "doodad").map(|i| 1u64 << i).unwrap_or(0);
+    let layer_bits = |m: &RawValue| -> u64 {
+        match m.get("layers").as_table() {
+            Some(t) => t
+                .iter()
+                .filter(|(_, on)| on.as_bool() == Some(true))
+                .filter_map(|(n, _)| db.collision_layers.iter().position(|l| l == n))
+                .fold(0u64, |acc, i| acc | 1 << i),
+            None => doodad,
+        }
+    };
+    let mut decoratives: Vec<(String, DecorativeAutoplace)> = Vec::new();
+    for name in listed("decorative") {
+        let raw = data.prototype("optimized-decorative", &name);
+        let a = raw.get("autoplace");
+        let Some((probability, _)) = autoplace_defs(a) else { continue };
+        let mask = layer_bits(raw.get("collision_mask"));
+        let restriction: Vec<&str> = a.get("tile_restriction").as_array().iter().filter_map(|t| t.as_str()).collect();
+        let allowed_tiles = db
+            .tile_ids()
+            .map(|t| {
+                let tile = db.tile(t);
+                tile.collision_mask.layers & mask == 0
+                    && (restriction.is_empty() || restriction.contains(&tile.name.as_str()))
+            })
+            .collect();
+        let cb = raw.get("collision_box");
+        let extent = [cb.at(0).at(0), cb.at(0).at(1), cb.at(1).at(0), cb.at(1).at(1)]
+            .iter()
+            .filter_map(|v| v.as_f64())
+            .fold(0.0f64, |m, v| m.max(v.abs()));
+        let order = a.get("order").as_str().unwrap_or("").to_owned();
+        decoratives.push((
+            order.clone() + &name,
+            DecorativeAutoplace {
+                name: name.clone(),
+                probability,
+                order,
+                placement_density: a.get("placement_density").as_i64().unwrap_or(1).max(1) as u32,
+                allowed_tiles,
+                spacing: (extent - 0.5).ceil().max(0.0) as i32,
+                variations: raw.get("pictures").as_array().len().clamp(1, 255) as u8,
+            },
+        ));
+    }
+    decoratives.sort_by(|a, b| a.0.cmp(&b.0));
     NoiseMapGen {
+        decoratives: decoratives.into_iter().map(|r| r.1).collect(),
         inputs,
         constants,
         tiles,

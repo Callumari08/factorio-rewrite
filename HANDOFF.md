@@ -31,7 +31,9 @@ Read this first when picking the project up in a new session. See also
   from the `trees` autoplace control). The renderer now only mirrors on-screen entities.
   Tile transitions use each tile's `variants.transition` masks (`terrain.rs`); water
   shores use the generic land mask, not the game's dedicated shore sprites yet.
-  Still to do: decoratives, cliffs, water shore sprites, fish, crude oil, enemies.
+  Decoratives are generated on demand by the client (`Surface::decoratives`, not game
+  state) and painted into the chunk ground textures; building does not remove them yet.
+  Still to do: cliffs, water shore sprites, fish, crude oil, enemies.
   Factorio's basis noise algorithm is not public; ours is gradient noise scaled to about
   -1..1 (`BASIS_AMPLITUDE`), and `multioctave_noise`'s loudness (`MULTIOCTAVE_GAIN` = 3) is
   calibrated so lakes cover 10-20% of the map, so maps follow the game's rules but not its
