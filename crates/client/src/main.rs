@@ -202,6 +202,7 @@ fn zoom_sweep(
     mut cam: Query<&mut Projection, With<Camera2d>>,
     mut last: Local<Option<i32>>,
     mut stats: Local<(i32, u32, f32, f32)>,
+    window: Single<&Window, With<bevy::window::PrimaryWindow>>,
     mut exit: MessageWriter<AppExit>,
 ) {
     let Some(dir) = std::env::var_os("FACTORIO_REWRITE_ZOOM_SWEEP") else { return };
@@ -227,11 +228,13 @@ fn zoom_sweep(
     stats.1 += 1;
     stats.2 += ms;
     stats.3 = stats.3.max(ms);
+    // Out to the furthest zoom the game allows (clamped by the zoom system), and back.
     let scale = if t < 6.0 { 1.0 + 5.0 * t / 6.0 } else { (6.0 - 5.0 * (t - 6.0) / 6.0).max(1.0) };
     if let Ok(mut p) = cam.single_mut()
         && let Projection::Orthographic(o) = p.as_mut()
     {
-        o.scale = scale;
+        let (lo, hi) = controls::zoom_limits(&window);
+        o.scale = scale.clamp(lo, hi);
     }
     let frame = (t / 0.5) as i32;
     if *last != Some(frame) && t <= 12.5 {

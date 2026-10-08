@@ -104,7 +104,7 @@ pub enum InsertSource {
 /// How many tiles around each character are kept generated.
 const GENERATE_RADIUS_CHUNKS: i32 = 7;
 /// Generated straight away when the world is created; the rest follows tick by tick.
-const START_RADIUS_CHUNKS: i32 = 3;
+const START_RADIUS_CHUNKS: i32 = 5;
 /// Chunks beyond the character's neighbours generated per tick.
 const CHUNKS_PER_TICK: u32 = 1;
 

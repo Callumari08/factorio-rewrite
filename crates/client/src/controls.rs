@@ -313,12 +313,28 @@ fn mouse(
     }
 }
 
-fn zoom(scroll: Res<AccumulatedMouseScroll>, ui: Res<UiState>, mut cam: Query<&mut Projection, With<Camera2d>>) {
-    if scroll.delta.y == 0.0 || ui.pointer_over_ui {
-        return;
-    }
+/// The game's zoom range in the world view: in to 3x, out to 0.3x, and no further out
+/// than shows 200 tiles along the window's longest side (the game limits zoom by the
+/// longest screen dimension). Our camera scale is 1 / zoom.
+pub fn zoom_limits(window: &Window) -> (f32, f32) {
+    let longest = window.width().max(window.height());
+    let min_zoom = (longest / (32.0 * 200.0)).max(0.3);
+    (1.0 / 3.0, 1.0 / min_zoom)
+}
+
+fn zoom(
+    scroll: Res<AccumulatedMouseScroll>,
+    ui: Res<UiState>,
+    window: Single<&Window, With<bevy::window::PrimaryWindow>>,
+    mut cam: Query<&mut Projection, With<Camera2d>>,
+) {
     let Ok(mut proj) = cam.single_mut() else { return };
+    let (lo, hi) = zoom_limits(&window);
     if let Projection::Orthographic(o) = proj.as_mut() {
-        o.scale = (o.scale * (1.0 - scroll.delta.y.signum() * 0.1)).clamp(0.2, 6.0);
+        if scroll.delta.y != 0.0 && !ui.pointer_over_ui {
+            o.scale *= 1.0 - scroll.delta.y.signum() * 0.1;
+        }
+        // Also keeps the zoom in range when the window is resized.
+        o.scale = o.scale.clamp(lo, hi);
     }
 }

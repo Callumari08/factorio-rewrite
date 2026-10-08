@@ -42,10 +42,12 @@ Each step ends with a playtest. Feedback from it becomes a ".5" step before the 
 
 4. **Map generation parity.** Done: the noise-expression language (parser, compiler,
    evaluator, spot noise), tiles, lakes, ores, trees, rocks, decoratives, cliffs, tile
-   transitions. Playtest fixes in progress: full-resolution ground and no seams, terrain
-   generated ahead of the zoomed-out view, water rendering and shores, ore amounts and
-   starting patches checked against the default settings. Later: a closer match to the
-   game's terrain look (basis noise and multioctave calibration).
+   transitions, GPU ground rendering (no seams, no flicker), the game's zoom range with
+   the ground generated ahead of the furthest view. Later: a closer match to the game's
+   terrain look (basis noise and multioctave calibration); ore calibration (richness is
+   about 73% of the game's, and rare ores such as uranium are far too common: compare
+   per-ore patch counts and amounts with `--generate-map-preview --report-quantities`);
+   the animated water shader; zooming out past 0.3 into the map view.
 1. **GUI parity (reopened; first pass only).** Checklist, each compared side by side with
    the game:
    - [ ] GUI skin from the game's own sprite sheets (`__core__/graphics/gui*`): frames,
