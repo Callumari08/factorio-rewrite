@@ -64,6 +64,11 @@ const HEADING: Color = Color::srgb(1.0, 0.902, 0.753);
 const TEXT: Color = Color::srgb(0.9, 0.9, 0.9);
 const PROGRESS: Color = Color::srgb(0.38, 0.72, 0.29);
 const SLOT_PX: f32 = 40.0;
+/// An `inside_shallow_frame_with_padding` panel around a 10-slot table.
+const PANEL_W: f32 = SLOT_PX * 10.0 + 24.0;
+/// The game's `entity_button_frame`: 10 slots wide, 4 slots (less spacing) high.
+const PREVIEW_W: f32 = SLOT_PX * 10.0;
+const PREVIEW_H: f32 = SLOT_PX * 4.0 - 8.0;
 
 #[derive(Resource)]
 #[allow(dead_code)]
@@ -139,6 +144,7 @@ enum UiButton {
     QueueTech(TechId),
     DequeueTech(TechId),
     OpenTech,
+    CloseWindow,
 }
 
 /// What the tooltip should describe when this element is hovered.
@@ -298,10 +304,10 @@ fn setup(mut commands: Commands, fonts: Res<Fonts>) {
             position_type: PositionType::Absolute,
             top: Val::Px(60.0),
             left: Val::Percent(50.0),
-            margin: UiRect::left(Val::Px(-440.0)),
-            flex_direction: FlexDirection::Row,
-            column_gap: Val::Px(8.0),
-            padding: UiRect::all(Val::Px(8.0)),
+            margin: UiRect::left(Val::Px(-(PANEL_W + 6.0 + 8.0))),
+            flex_direction: FlexDirection::Column,
+            // The game's `frame` style padding.
+            padding: UiRect { left: Val::Px(8.0), right: Val::Px(8.0), top: Val::Px(4.0), bottom: Val::Px(8.0) },
             display: Display::None,
             ..default()
         },
@@ -431,6 +437,10 @@ fn clicks(
         (UiButton::SelectTech(t), SimButton::Right) => pending.push(InputAction::DequeueResearch(t)),
         (UiButton::QueueTech(t), _) => pending.push(InputAction::QueueResearch { tech: t, front: shift }),
         (UiButton::DequeueTech(t), _) => pending.push(InputAction::DequeueResearch(t)),
+        (UiButton::CloseWindow, _) => {
+            ui.inventory_open = false;
+            pending.push(InputAction::OpenEntity(None));
+        }
         (UiButton::OpenTech, _) => {
             ui.tech_open = true;
             tech.selected = sim.0.research().current();
@@ -521,6 +531,37 @@ impl Ctx<'_> {
             Text::new(s.into()),
             TextFont { font: self.fonts.bold.clone(), font_size: 18.0, ..default() },
             TextColor(HEADING),
+        ));
+    }
+
+    /// A panel's caption (the "Character" over the inventory).
+    fn subheading(&self, p: &mut ChildSpawnerCommands, s: impl Into<String>) {
+        p.spawn((
+            Text::new(s.into()),
+            TextFont { font: self.fonts.semibold.clone(), font_size: 15.0, ..default() },
+            TextColor(Color::WHITE),
+        ));
+    }
+
+    /// A `utility-sprites` picture drawn `size` px square.
+    fn utility(&mut self, p: &mut ChildSpawnerCommands, name: &str, size: f32) {
+        let d = self.data.0.clone();
+        let n = name.to_owned();
+        let Some(s) = self
+            .sprites
+            .get(self.assets, self.data, &format!("utility:{name}"), || factorio_data::sprite::utility_sprite(&d, &n))
+        else {
+            return;
+        };
+        let r = &s.sprite;
+        p.spawn((
+            ImageNode {
+                image: s.image.clone(),
+                rect: Some(Rect::new(r.x as f32, r.y as f32, (r.x + r.width) as f32, (r.y + r.height) as f32)),
+                ..default()
+            },
+            Node { width: Val::Px(size), height: Val::Px(size), ..default() },
+            Pickable::IGNORE,
         ));
     }
 
@@ -627,12 +668,192 @@ fn grid(p: &mut ChildSpawnerCommands, columns: usize, f: impl FnOnce(&mut ChildS
     .with_children(f);
 }
 
+/// A frame's title bar: the title, the striped draggable filler and the close button.
+fn frame_header(w: &mut ChildSpawnerCommands, ctx: &mut Ctx, title: &str) {
+    let l = looks();
+    w.spawn(Node {
+        flex_direction: FlexDirection::Row,
+        align_items: AlignItems::Center,
+        column_gap: Val::Px(8.0),
+        // Measured from the game: the panels start 40 px below the frame's top edge.
+        height: Val::Px(36.0),
+        padding: UiRect::bottom(Val::Px(4.0)),
+        ..default()
+    })
+    .with_children(|h| {
+        h.spawn((
+            Text::new(title),
+            TextFont { font: ctx.fonts.bold.clone(), font_size: 18.0, ..default() },
+            TextColor(l.title_color),
+        ));
+        let mut filler =
+            h.spawn(Node { flex_grow: 1.0, height: Val::Px(24.0), margin: UiRect::left(Val::Px(4.0)), ..default() });
+        if let Some((image, rect)) = &l.header_filler {
+            filler.insert(ImageNode {
+                image: image.clone(),
+                rect: Some(*rect),
+                image_mode: bevy::ui::widget::NodeImageMode::Tiled {
+                    tile_x: true,
+                    tile_y: true,
+                    stretch_value: l.scale,
+                },
+                ..default()
+            });
+        }
+        h.spawn((
+            UiButton::CloseWindow,
+            Button,
+            Tip::Text("Close".into()),
+            Node {
+                width: Val::Px(24.0),
+                height: Val::Px(24.0),
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
+                ..default()
+            },
+            crate::gui_skin::node_image(&l.frame_button.default),
+            l.frame_button.clone(),
+        ))
+        .with_children(|b| ctx.utility(b, "close", 16.0));
+    });
+}
+
+/// The checkered backdrop of entity previews: tile-sized squares two shades apart,
+/// lighter towards the bottom (measured from the game).
+fn preview_background() -> Image {
+    let (w, h) = (PREVIEW_W as u32, PREVIEW_H as u32);
+    let mut px = Vec::with_capacity((w * h * 4) as usize);
+    for y in 0..h {
+        for x in 0..w {
+            let base = 37.0 + 36.0 * y as f32 / (h - 1) as f32;
+            // Squares offset to match the game's (the preview is centred on the entity).
+            let odd = ((x + 16) / 32 + (y + 22) / 32) % 2 == 1;
+            let v = (base + if odd { 12.0 } else { 0.0 }) as u8;
+            px.extend_from_slice(&[v, v, v, 255]);
+        }
+    }
+    Image::new(
+        bevy::render::render_resource::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        bevy::render::render_resource::TextureDimension::D2,
+        px,
+        bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
+        bevy::asset::RenderAssetUsages::RENDER_WORLD,
+    )
+}
+
+/// The game's `entity_button_frame`: the entity drawn at normal zoom over a checkered
+/// backdrop, in a deep frame.
+fn entity_preview(p: &mut ChildSpawnerCommands, ctx: &mut Ctx, sim: &Sim, id: EntityId, checker: &Handle<Image>) {
+    let look = crate::render::entity_look(sim, ctx.data, ctx.sprites, ctx.assets, id);
+    p.spawn(Node { width: Val::Px(PREVIEW_W), height: Val::Px(PREVIEW_H), overflow: Overflow::clip(), ..default() })
+        .with_children(|v| {
+            crate::gui_skin::backdrop(v, &looks().deep_in_shallow);
+            // Inside the frame's border.
+            let inset = Val::Px(looks().deep_in_shallow.border * looks().scale);
+            v.spawn((
+                ImageNode::new(checker.clone()),
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: inset,
+                    top: inset,
+                    right: inset,
+                    bottom: inset,
+                    ..default()
+                },
+                ZIndex(-1),
+                Pickable::IGNORE,
+            ));
+            let centre = Vec2::new(PREVIEW_W, PREVIEW_H) / 2.0;
+            for (l, kind) in look.map(|(_, layers)| layers).unwrap_or_default() {
+                let s = &l.sprite;
+                let size = Vec2::new(s.width as f32, s.height as f32) * s.scale as f32;
+                let at = centre + Vec2::new(s.shift.0 as f32, s.shift.1 as f32) * 32.0 - size / 2.0;
+                let color = match kind {
+                    factorio_data::sprite::LayerKind::Shadow => Color::srgba(0.0, 0.0, 0.0, 0.55),
+                    factorio_data::sprite::LayerKind::Normal => Color::WHITE,
+                    factorio_data::sprite::LayerKind::Tinted([r, g, b, a]) => Color::srgba_u8(r, g, b, a),
+                };
+                v.spawn((
+                    ImageNode {
+                        image: l.image.clone(),
+                        rect: Some(Rect::new(s.x as f32, s.y as f32, (s.x + s.width) as f32, (s.y + s.height) as f32)),
+                        color,
+                        ..default()
+                    },
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: Val::Px(at.x),
+                        top: Val::Px(at.y),
+                        width: Val::Px(size.x),
+                        height: Val::Px(size.y),
+                        ..default()
+                    },
+                    Pickable::IGNORE,
+                ));
+            }
+        });
+}
+
+/// The game's `production_progressbar`: a 24 px bar with the percentage inside it.
+fn production_bar(p: &mut ChildSpawnerCommands, ctx: &Ctx, fraction: f64) {
+    let l = looks();
+    p.spawn((
+        Node {
+            flex_grow: 1.0,
+            height: Val::Px(24.0),
+            justify_content: JustifyContent::FlexEnd,
+            align_items: AlignItems::Center,
+            padding: UiRect::right(Val::Px(8.0)),
+            ..default()
+        },
+        crate::gui_skin::node_image(&l.bar_background),
+    ))
+    .with_children(|b| {
+        let mut bar = crate::gui_skin::node_image(&l.bar);
+        bar.color = l.production_bar_color;
+        b.spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(0.0),
+                top: Val::Px(0.0),
+                width: Val::Percent((fraction * 100.0) as f32),
+                height: Val::Percent(100.0),
+                ..default()
+            },
+            bar,
+        ));
+        b.spawn((
+            Text::new(format!("{:.0}%", fraction * 100.0)),
+            TextFont { font: ctx.fonts.regular.clone(), font_size: 14.0, ..default() },
+            TextColor(if fraction > 0.9 { Color::BLACK } else { Color::WHITE }),
+        ));
+    });
+}
+
+/// The game's `line` style: a horizontal separator.
+fn separator(p: &mut ChildSpawnerCommands) {
+    let mut e = p.spawn(Node { width: Val::Percent(100.0), height: Val::Px(4.0), ..default() });
+    if let Some((image, rect)) = &looks().line {
+        e.insert(ImageNode {
+            image: image.clone(),
+            rect: Some(*rect),
+            image_mode: bevy::ui::widget::NodeImageMode::Tiled {
+                tile_x: true,
+                tile_y: false,
+                stretch_value: looks().scale,
+            },
+            ..default()
+        });
+    }
+}
+
+/// The game's `entity_frame`: an inside shallow frame with 12 px padding (8 on top).
 fn panel(p: &mut ChildSpawnerCommands, width: f32, f: impl FnOnce(&mut ChildSpawnerCommands)) {
     p.spawn(Node {
         width: Val::Px(width),
         flex_direction: FlexDirection::Column,
-        padding: UiRect::all(Val::Px(8.0)),
-        row_gap: Val::Px(6.0),
+        padding: UiRect { left: Val::Px(12.0), right: Val::Px(12.0), top: Val::Px(8.0), bottom: Val::Px(12.0) },
+        row_gap: Val::Px(8.0),
         ..default()
     })
     .with_children(|c| {
@@ -769,6 +990,7 @@ fn window(
     mut sprites: ResMut<Sprites>,
     mut root: Single<(Entity, &mut Node), With<WindowRoot>>,
     mut last: Local<String>,
+    mut checker: Local<Option<Handle<Image>>>,
 ) {
     let opened = opened(&sim);
     let show = ui.inventory_open || opened.is_some();
@@ -803,15 +1025,27 @@ fn window(
     let mut ctx =
         Ctx { sprites: &mut sprites, assets: &assets, data: &data, fonts: &fonts, db, research: sim.0.research() };
     commands.entity(root).despawn_related::<Children>();
+    let checker = checker.get_or_insert_with(|| images.add(preview_background())).clone();
+    let title = opened
+        .and_then(|id| sim.0.entity(id))
+        .map(|e| names.entity(e.proto).to_owned())
+        .unwrap_or_else(|| "Character".to_owned());
     commands.entity(root).with_children(|w| {
-        panel(w, SLOT_PX * 10.0 + 16.0, |p| {
-            ctx.heading(p, "Character");
-            ctx.inventory(p, &c.inventory, 10, |i| SlotRef::Character(i as u16));
-        });
-        match opened {
-            Some(id) => panel(w, 420.0, |p| entity_panel(p, &mut ctx, &sim, &names, id, &local, &chart, &mut images)),
-            None => panel(w, SLOT_PX * 10.0 + 16.0, |p| crafting_panel(p, &mut ctx, &names, c, local.tab, cheat)),
-        }
+        frame_header(w, &mut ctx, &title);
+        w.spawn(Node { flex_direction: FlexDirection::Row, column_gap: Val::Px(12.0), ..default() }).with_children(
+            |w| {
+                panel(w, PANEL_W, |p| {
+                    ctx.subheading(p, "Character");
+                    ctx.inventory(p, &c.inventory, 10, |i| SlotRef::Character(i as u16));
+                });
+                match opened {
+                    Some(id) => panel(w, PANEL_W, |p| {
+                        entity_panel(p, &mut ctx, &sim, &names, id, &local, &chart, &mut images, &checker)
+                    }),
+                    None => panel(w, PANEL_W, |p| crafting_panel(p, &mut ctx, &names, c, local.tab, cheat)),
+                }
+            },
+        );
     });
 }
 
@@ -898,14 +1132,16 @@ fn crafting_panel(p: &mut ChildSpawnerCommands, ctx: &mut Ctx, names: &Names, c:
     }
 }
 
+const STATUS_GREEN: Color = Color::srgb(0.45, 0.85, 0.35);
+const STATUS_YELLOW: Color = Color::srgb(0.95, 0.8, 0.3);
+const STATUS_RED: Color = Color::srgb(0.95, 0.35, 0.3);
+
 /// Factorio-style status text for a machine.
 fn status(sim: &Sim, id: EntityId) -> (&'static str, Color) {
     let db = sim.0.prototypes();
     let Some(e) = sim.0.entity(id) else { return ("", TEXT) };
     let proto = db.entity(e.proto);
-    let green = Color::srgb(0.45, 0.85, 0.35);
-    let yellow = Color::srgb(0.95, 0.8, 0.3);
-    let red = Color::srgb(0.95, 0.35, 0.3);
+    let (green, yellow, red) = (STATUS_GREEN, STATUS_YELLOW, STATUS_RED);
     let no_power = |energy: &factorio_sim::energy::EnergyState| match (energy, proto.energy_source()) {
         (factorio_sim::energy::EnergyState::Burner(b), _) => !b.has_fuel(),
         (_, Some(EnergySource::Electric { .. })) => {
@@ -983,36 +1219,35 @@ fn entity_panel(
     local: &Local_,
     chart: &crate::chart::Chart,
     images: &mut Assets<Image>,
+    checker: &Handle<Image>,
 ) {
     let db = ctx.db;
     let Some(e) = sim.0.entity(id) else { return };
     let proto = db.entity(e.proto);
-    ctx.heading(p, names.entity(e.proto).to_owned());
+    // Status: a coloured light and the status text.
     let (st, color) = status(sim, id);
     if !st.is_empty() {
-        ctx.text(p, st, 15.0, color);
+        let light = if color == STATUS_GREEN {
+            "status_working"
+        } else if color == STATUS_RED {
+            "status_not_working"
+        } else {
+            "status_yellow"
+        };
+        p.spawn(Node {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            column_gap: Val::Px(8.0),
+            height: Val::Px(20.0),
+            ..default()
+        })
+        .with_children(|r| {
+            ctx.utility(r, light, 16.0);
+            ctx.text(r, st, 14.0, Color::WHITE);
+        });
     }
-    // Power line.
-    let kw = |v: factorio_sim::Fixed| crate::chart::power_text(v.to_f64_lossy());
-    match proto.energy_source() {
-        Some(EnergySource::Electric { .. }) => {
-            let used = sim.0.power.last_consumption.get(&id).copied().unwrap_or_default();
-            let max = factorio_sim::power::electric_buffer_capacity(proto);
-            ctx.text(p, format!("Power: {} / {}", kw(used), kw(max)), 14.0, TEXT);
-        }
-        Some(EnergySource::Burner { .. }) => {
-            let usage = match &proto.data {
-                EntityData::MiningDrill { energy_usage, .. } | EntityData::CraftingMachine { energy_usage, .. } => {
-                    Some(*energy_usage)
-                }
-                EntityData::Boiler { energy_consumption, .. } => Some(*energy_consumption),
-                _ => None,
-            };
-            if let Some(u) = usage {
-                ctx.text(p, format!("Consumption: {}", kw(u)), 14.0, TEXT);
-            }
-        }
-        _ => {}
+    if !matches!(e.state, EntityState::Pole) {
+        entity_preview(p, ctx, sim, id, checker);
     }
     let fuel_slots = |p: &mut ChildSpawnerCommands, ctx: &mut Ctx, energy: &factorio_sim::energy::EnergyState| {
         if let Some(b) = energy.burner() {
@@ -1037,10 +1272,12 @@ fn entity_panel(
         }
         EntityState::Crafter(c) => {
             if !c.furnace {
+                // Recipe row: its product and name, and the change-recipe button.
                 p.spawn(Node {
                     flex_direction: FlexDirection::Row,
                     column_gap: Val::Px(8.0),
                     align_items: AlignItems::Center,
+                    height: Val::Px(SLOT_PX),
                     ..default()
                 })
                 .with_children(|r| {
@@ -1048,39 +1285,55 @@ fn entity_panel(
                         ItemOrFluid::Item(i) => Some(i),
                         _ => None,
                     });
-                    ctx.slot(
-                        r,
-                        main,
-                        None,
-                        TAB_SELECTED,
-                        Some(UiButton::ChangeRecipe),
-                        c.recipe.map(Tip::Recipe).or(Some(Tip::Text("Choose a recipe".into()))),
-                    );
-                    let label =
-                        c.recipe.map(|r| names.recipe(r).to_owned()).unwrap_or("No recipe (click to choose)".into());
-                    ctx.text(r, label, 15.0, TEXT);
+                    if let Some(i) = main {
+                        ctx.icon(r, i, 32.0);
+                    }
+                    let label = c.recipe.map(|r| names.recipe(r).to_owned()).unwrap_or("No recipe".into());
+                    r.spawn((
+                        Text::new(label),
+                        TextFont { font: ctx.fonts.bold.clone(), font_size: 14.0, ..default() },
+                        TextColor(Color::WHITE),
+                        Node { flex_grow: 1.0, ..default() },
+                    ));
+                    let l = looks();
+                    r.spawn((
+                        UiButton::ChangeRecipe,
+                        Button,
+                        Tip::Text("Change recipe".into()),
+                        Node {
+                            width: Val::Px(SLOT_PX),
+                            height: Val::Px(SLOT_PX),
+                            justify_content: JustifyContent::Center,
+                            align_items: AlignItems::Center,
+                            ..default()
+                        },
+                        crate::gui_skin::node_image(&l.button.default),
+                        l.button.clone(),
+                    ))
+                    .with_children(|b| ctx.utility(b, "change_recipe", 32.0));
                 });
             }
             if !c.furnace && (c.recipe.is_none() || local.choosing_recipe) {
                 recipe_chooser(p, ctx, names, proto);
                 return;
             }
+            separator(p);
+            // Ingredients, progress and products in one row.
             let ticks = c.recipe.map(|r| db.recipe(r).ticks().to_f64_lossy()).unwrap_or(1.0);
-            progress_bar(p, c.progress.to_f64_lossy() / ticks, PROGRESS);
-            p.spawn(Node { flex_direction: FlexDirection::Row, column_gap: Val::Px(24.0), ..default() }).with_children(
-                |r| {
-                    r.spawn(Node { flex_direction: FlexDirection::Column, row_gap: Val::Px(4.0), ..default() })
-                        .with_children(|col| {
-                            ctx.text(col, "Input", 14.0, HEADING);
-                            ctx.inventory(col, &c.input, 4, |i| SlotRef::Opened(EntityInventory::Input, i as u16));
-                        });
-                    r.spawn(Node { flex_direction: FlexDirection::Column, row_gap: Val::Px(4.0), ..default() })
-                        .with_children(|col| {
-                            ctx.text(col, "Result", 14.0, HEADING);
-                            ctx.inventory(col, &c.output, 4, |i| SlotRef::Opened(EntityInventory::Output, i as u16));
-                        });
-                },
-            );
+            let fraction = (c.progress.to_f64_lossy() / ticks).clamp(0.0, 1.0);
+            p.spawn(Node {
+                flex_direction: FlexDirection::Row,
+                column_gap: Val::Px(12.0),
+                align_items: AlignItems::Center,
+                ..default()
+            })
+            .with_children(|r| {
+                let n = c.input.slots().len().max(1);
+                ctx.inventory(r, &c.input, n, |i| SlotRef::Opened(EntityInventory::Input, i as u16));
+                production_bar(r, ctx, fraction);
+                let n = c.output.slots().len().max(1);
+                ctx.inventory(r, &c.output, n, |i| SlotRef::Opened(EntityInventory::Output, i as u16));
+            });
             fuel_slots(p, ctx, &c.energy);
         }
         EntityState::Inserter(i) => {
@@ -1100,7 +1353,7 @@ fn entity_panel(
                 );
             }
             if matches!(proto.data, EntityData::Generator { .. }) {
-                ctx.text(p, format!("Output: {}", kw(f.last_power)), 14.0, TEXT);
+                ctx.text(p, format!("Output: {}", crate::chart::power_text(f.last_power.to_f64_lossy())), 14.0, TEXT);
             }
             fuel_slots(p, ctx, &f.energy);
         }

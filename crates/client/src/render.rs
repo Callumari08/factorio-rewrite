@@ -69,7 +69,7 @@ pub fn belt_row_name(direction: Direction, shape: BeltShape) -> String {
     format!("{}_to_{}_index", dir_name(from), dir_name(direction))
 }
 
-type Look = (String, Vec<(Loaded, LayerKind)>);
+pub(crate) type Look = (String, Vec<(Loaded, LayerKind)>);
 
 /// Whether a machine is doing work right now (drives its animations).
 fn is_working(state: &EntityState) -> bool {
@@ -141,7 +141,13 @@ fn draw_cliffs(
 
 /// Sprite layers for an entity in its current state, with a key that changes whenever
 /// the picture does.
-fn entity_look(sim: &Sim, data: &Data, sprites: &mut Sprites, assets: &AssetServer, id: EntityId) -> Option<Look> {
+pub(crate) fn entity_look(
+    sim: &Sim,
+    data: &Data,
+    sprites: &mut Sprites,
+    assets: &AssetServer,
+    id: EntityId,
+) -> Option<Look> {
     let single = |l: Option<(String, Loaded)>| l.map(|(k, l)| (k, vec![(l, LayerKind::Normal)]));
     let e = sim.0.entity(id)?;
     if let EntityState::Static { variation } = e.state {

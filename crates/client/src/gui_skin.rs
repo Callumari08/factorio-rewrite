@@ -180,6 +180,12 @@ fn button_states(mut q: Query<(&Interaction, &ButtonLook, &mut ImageNode), Chang
 pub struct Looks {
     pub frame: Slice,
     pub deep: Slice,
+    /// `deep_frame_in_shallow_frame`, e.g. around the entity preview.
+    pub deep_in_shallow: Slice,
+    /// The `line` style's horizontal line piece, tiled.
+    pub line: Option<(Handle<Image>, Rect)>,
+    /// `production_progressbar`'s bar colour.
+    pub production_bar_color: Color,
     pub shallow: Slice,
     pub slot: ButtonLook,
     pub inventory_slot: ButtonLook,
@@ -227,8 +233,18 @@ fn resolve(mut commands: Commands, skin: Res<Skin>, data: Res<Data>, assets: Res
         let path = data.0.resolve_path(&skin.tileset)?;
         Some((assets.load(crate::sprites::asset_path(&data, &path)), Rect::from_corners(p, p + size)))
     });
+    let line = skin.prop("line", "border").and_then(|b| {
+        let h = b.get("horizontal_line");
+        let p = pair(h.get("position"))?;
+        let size = pair(h.get("size")).unwrap_or(Vec2::new(1.0, 8.0));
+        let path = data.0.resolve_path(&skin.tileset)?;
+        Some((assets.load(crate::sprites::asset_path(&data, &path)), Rect::from_corners(p, p + size)))
+    });
     let looks = Looks {
         frame: get("frame", "graphical_set").unwrap_or_else(fallback),
+        deep_in_shallow: get("deep_frame_in_shallow_frame", "graphical_set").unwrap_or_else(fallback),
+        line,
+        production_bar_color: skin.color("production_progressbar", "color").unwrap_or(Color::srgb_u8(43, 227, 39)),
         deep: get("inside_deep_frame", "graphical_set").unwrap_or_else(fallback),
         shallow: get("inside_shallow_frame", "graphical_set").unwrap_or_else(fallback),
         slot: look(states("slot_button")),

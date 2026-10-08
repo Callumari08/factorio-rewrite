@@ -714,3 +714,25 @@ pub fn entity_layers(data: &GameData, name: &str, dir: usize, t: u64, working: b
     }
     out
 }
+
+/// A sprite from `data.raw["utility-sprites"].default` (GUI icons such as `close` or
+/// `status_working`): the full-size picture (mipmapped icons keep their mips beside it).
+pub fn utility_sprite(data: &GameData, name: &str) -> Option<SpriteRef> {
+    let s = data.prototype("utility-sprites", "default").get(name);
+    let s = if s.get("layers").is_nil() { s } else { s.get("layers").at(0) };
+    let size = s.get("size");
+    let (w, h) = match (size.as_i64(), size.at(0).as_i64(), size.at(1).as_i64()) {
+        (Some(n), _, _) => (n, n),
+        (_, Some(w), Some(h)) => (w, h),
+        _ => (s.get("width").as_i64()?, s.get("height").as_i64()?),
+    };
+    Some(SpriteRef {
+        path: data.resolve_path(s.get("filename").as_str()?)?,
+        x: s.get("x").as_i64().unwrap_or(0) as u32,
+        y: s.get("y").as_i64().unwrap_or(0) as u32,
+        width: w as u32,
+        height: h as u32,
+        scale: s.get("scale").as_f64().unwrap_or(1.0),
+        shift: (0.0, 0.0),
+    })
+}

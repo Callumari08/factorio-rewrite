@@ -289,6 +289,13 @@ impl Simulation {
             return;
         }
         if let InputAction::CheatPlaceEntity { entity, position, direction } = input.action {
+            // Cheat placement clears trees and rocks in the way.
+            let footprint = Self::footprint(self.db.entity(entity), position, direction);
+            for id in self.entities_in(footprint) {
+                if self.entities.get(&id).is_some_and(|e| matches!(e.state, EntityState::Static { .. })) {
+                    self.remove_entity(id);
+                }
+            }
             let _ = self.place_entity(entity, position, direction);
             return;
         }

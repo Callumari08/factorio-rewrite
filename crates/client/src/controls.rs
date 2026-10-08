@@ -17,6 +17,7 @@ impl Plugin for ControlsPlugin {
         app.init_resource::<MouseWorld>()
             .init_resource::<UiState>()
             .add_systems(Startup, open_from_env)
+            .add_systems(Update, open_later)
             .add_systems(Update, (update_mouse_world, keyboard, mouse, zoom).chain());
     }
 }
@@ -47,7 +48,25 @@ struct ControlState {
 
 /// `FACTORIO_REWRITE_UI=1` opens the inventory (and the first machine's window) at start,
 /// for screenshots.
-fn open_from_env(sim: Res<Sim>, mut ui: ResMut<UiState>, mut pending: ResMut<PendingInputs>) {
+/// An entity for [`open_from_env`] to open once the character has moved next to it.
+#[derive(Resource)]
+struct OpenLater(MapPosition);
+
+fn open_later(
+    mut commands: Commands,
+    later: Option<Res<OpenLater>>,
+    mut pending: ResMut<PendingInputs>,
+    mut frames: Local<u32>,
+) {
+    let Some(later) = later else { return };
+    *frames += 1;
+    if *frames == 10 {
+        pending.push(InputAction::OpenEntity(Some(later.0)));
+        commands.remove_resource::<OpenLater>();
+    }
+}
+
+fn open_from_env(mut commands: Commands, sim: Res<Sim>, mut ui: ResMut<UiState>, mut pending: ResMut<PendingInputs>) {
     if std::env::var_os("FACTORIO_REWRITE_UI").is_none() {
         return;
     }
@@ -62,21 +81,29 @@ fn open_from_env(sim: Res<Sim>, mut ui: ResMut<UiState>, mut pending: ResMut<Pen
     }
     ui.inventory_open = true;
     // `FACTORIO_REWRITE_UI=power` opens a pole (the network window) instead of a machine,
-    // `lab` a lab.
-    let power = std::env::var("FACTORIO_REWRITE_UI").is_ok_and(|v| v == "power");
-    let lab = std::env::var("FACTORIO_REWRITE_UI").is_ok_and(|v| v == "lab");
+    // `lab` a lab, `chest` a container, `furnace` a furnace. The character is moved next to
+    // it so it is in reach.
+    let want = std::env::var("FACTORIO_REWRITE_UI").unwrap_or_default();
     let at = sim
         .0
         .entities()
-        .find(|(_, e)| match e.state {
-            factorio_sim::world::EntityState::Pole => power,
-            factorio_sim::world::EntityState::Lab(_) => lab,
-            factorio_sim::world::EntityState::Crafter(_) => !power && !lab,
+        .find(|(_, e)| match &e.state {
+            factorio_sim::world::EntityState::Pole => want == "power",
+            factorio_sim::world::EntityState::Lab(_) => want == "lab",
+            factorio_sim::world::EntityState::Container(_) => want == "chest",
+            factorio_sim::world::EntityState::Crafter(c) => {
+                if want == "furnace" {
+                    c.furnace
+                } else {
+                    !c.furnace && want == "1"
+                }
+            }
             _ => false,
         })
         .map(|(_, e)| e.position);
-    if at.is_some() {
-        pending.push(InputAction::OpenEntity(at));
+    if let Some(p) = at {
+        pending.push(InputAction::CheatTeleport(p.offset(0, 3 * 256)));
+        commands.insert_resource(OpenLater(p));
     }
 }
 

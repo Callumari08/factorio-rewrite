@@ -9,13 +9,17 @@ use factorio_sim::{PlayerInput, Simulation};
 pub fn build(sim: &mut Simulation) {
     let db = sim.prototypes_arc();
     let Some(iron) = db.entity_id("iron-ore") else { return };
+    // Let the starting area finish generating first.
+    for _ in 0..240 {
+        sim.step(&[]);
+    }
     let is_iron = |sim: &Simulation, x: i32, y: i32| {
         sim.surface.resource(TilePosition::new(x, y)).is_some_and(|r| r.proto == iron)
     };
     // Nearest spot with a 4x2 block of iron for two drills.
     let mut best: Option<(i64, TilePosition)> = None;
-    for y in -60..60 {
-        for x in -60..60 {
+    for y in -200..200 {
+        for x in -200..200 {
             let ok = (0..4).all(|dx| (0..2).all(|dy| is_iron(sim, x + dx, y + dy)));
             let d = (x as i64).pow(2) + (y as i64).pow(2);
             if ok && best.is_none_or(|(bd, _)| d < bd) {
