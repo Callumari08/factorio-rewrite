@@ -298,21 +298,23 @@ fn setup(mut commands: Commands, fonts: Res<Fonts>) {
         },
         crate::gui_skin::node_image(&looks().frame),
     ));
+    // Windows are centred on the screen; the root only lays them out (each frame catches
+    // the mouse itself).
     commands.spawn((
         WindowRoot,
-        Interaction::default(),
         Node {
             position_type: PositionType::Absolute,
-            top: Val::Px(60.0),
-            left: Val::Percent(50.0),
-            margin: UiRect::left(Val::Px(-(PANEL_W + 6.0 + 8.0))),
-            flex_direction: FlexDirection::Column,
-            // The game's `frame` style padding.
-            padding: UiRect { left: Val::Px(8.0), right: Val::Px(8.0), top: Val::Px(4.0), bottom: Val::Px(8.0) },
+            left: Val::Px(0.0),
+            right: Val::Px(0.0),
+            top: Val::Px(0.0),
+            bottom: Val::Px(0.0),
+            flex_direction: FlexDirection::Row,
+            justify_content: JustifyContent::Center,
+            align_items: AlignItems::Center,
             display: Display::None,
             ..default()
         },
-        crate::gui_skin::node_image(&looks().frame),
+        Pickable::IGNORE,
     ));
     commands.spawn((
         QueueRoot,
@@ -694,7 +696,32 @@ fn grid(p: &mut ChildSpawnerCommands, columns: usize, f: impl FnOnce(&mut ChildS
 }
 
 /// A frame's title bar: the title, the striped draggable filler and the close button.
-fn frame_header(w: &mut ChildSpawnerCommands, ctx: &mut Ctx, title: &str) {
+/// A window frame (the game's `frame` style) with a title bar, holding `f`'s contents.
+fn frame(
+    w: &mut ChildSpawnerCommands,
+    ctx: &mut Ctx,
+    title: &str,
+    buttons: &[&str],
+    f: impl FnOnce(&mut ChildSpawnerCommands, &mut Ctx),
+) {
+    w.spawn((
+        Node {
+            flex_direction: FlexDirection::Column,
+            padding: UiRect { left: Val::Px(8.0), right: Val::Px(8.0), top: Val::Px(4.0), bottom: Val::Px(8.0) },
+            ..default()
+        },
+        Interaction::default(),
+        crate::gui_skin::node_image(&looks().frame),
+    ))
+    .with_children(|w| {
+        frame_header(w, ctx, title, buttons);
+        f(w, ctx);
+    });
+}
+
+/// A frame's title bar: the title, the striped draggable filler and the action buttons
+/// (`search`, `close`).
+fn frame_header(w: &mut ChildSpawnerCommands, ctx: &mut Ctx, title: &str, buttons: &[&str]) {
     let l = looks();
     w.spawn(Node {
         flex_direction: FlexDirection::Row,
@@ -725,21 +752,25 @@ fn frame_header(w: &mut ChildSpawnerCommands, ctx: &mut Ctx, title: &str) {
                 ..default()
             });
         }
-        h.spawn((
-            UiButton::CloseWindow,
-            Button,
-            Tip::Text("Close".into()),
-            Node {
-                width: Val::Px(24.0),
-                height: Val::Px(24.0),
-                justify_content: JustifyContent::Center,
-                align_items: AlignItems::Center,
-                ..default()
-            },
-            crate::gui_skin::node_image(&l.frame_button.default),
-            l.frame_button.clone(),
-        ))
-        .with_children(|b| ctx.utility(b, "close", 16.0));
+        for b in buttons {
+            let mut e = h.spawn((
+                Node {
+                    width: Val::Px(24.0),
+                    height: Val::Px(24.0),
+                    justify_content: JustifyContent::Center,
+                    align_items: AlignItems::Center,
+                    ..default()
+                },
+                crate::gui_skin::node_image(&l.frame_button.default),
+                l.frame_button.clone(),
+                Button,
+            ));
+            match *b {
+                "close" => e.insert((UiButton::CloseWindow, Tip::Text("Close".into()))),
+                _ => e.insert(Tip::Text("Search".into())),
+            };
+            e.with_children(|c| ctx.utility(c, b, 16.0));
+        }
     });
 }
 
@@ -1093,22 +1124,61 @@ fn window(
         .and_then(|id| sim.0.entity(id))
         .map(|e| names.entity(e.proto).to_owned())
         .unwrap_or_else(|| "Character".to_owned());
-    commands.entity(root).with_children(|w| {
-        frame_header(w, &mut ctx, &title);
-        w.spawn(Node { flex_direction: FlexDirection::Row, column_gap: Val::Px(12.0), ..default() }).with_children(
-            |w| {
+    commands.entity(root).with_children(|w| match opened {
+        // An entity: one frame, the character's inventory beside the entity's panel.
+        Some(id) => frame(w, &mut ctx, &title, &["close"], |w, ctx| {
+            w.spawn(Node { flex_direction: FlexDirection::Row, column_gap: Val::Px(12.0), ..default() }).with_children(
+                |w| {
+                    panel(w, PANEL_W, |p| {
+                        ctx.subheading(p, "Character");
+                        ctx.inventory(p, &c.inventory, 10, |i| SlotRef::Character(i as u16));
+                    });
+                    panel(w, PANEL_W, |p| {
+                        entity_panel(p, ctx, &sim, &names, id, &local, &chart, &mut images, &checker)
+                    });
+                },
+            );
+        }),
+        // The character window: the Character and Crafting frames side by side.
+        None => {
+            frame(w, &mut ctx, "Character", &[], |w, ctx| {
                 panel(w, PANEL_W, |p| {
-                    ctx.subheading(p, "Character");
+                    // Toolbar: the colour picker and the player's colour.
+                    p.spawn(Node {
+                        flex_direction: FlexDirection::Row,
+                        justify_content: JustifyContent::FlexEnd,
+                        column_gap: Val::Px(4.0),
+                        height: Val::Px(28.0),
+                        ..default()
+                    })
+                    .with_children(|t| {
+                        let l = looks();
+                        t.spawn((
+                            Node {
+                                width: Val::Px(28.0),
+                                height: Val::Px(28.0),
+                                justify_content: JustifyContent::Center,
+                                align_items: AlignItems::Center,
+                                ..default()
+                            },
+                            crate::gui_skin::node_image(&l.button.default),
+                            l.button.clone(),
+                            Button,
+                            Tip::Text("Character colour".into()),
+                        ))
+                        .with_children(|b| ctx.utility(b, "color_picker", 24.0));
+                        t.spawn((
+                            Node { width: Val::Px(28.0), height: Val::Px(28.0), ..default() },
+                            BackgroundColor(Color::srgb(0.869, 0.5, 0.130)),
+                        ));
+                    });
                     ctx.inventory(p, &c.inventory, 10, |i| SlotRef::Character(i as u16));
                 });
-                match opened {
-                    Some(id) => panel(w, PANEL_W, |p| {
-                        entity_panel(p, &mut ctx, &sim, &names, id, &local, &chart, &mut images, &checker)
-                    }),
-                    None => panel(w, PANEL_W, |p| crafting_panel(p, &mut ctx, &names, c, local.tab, cheat)),
-                }
-            },
-        );
+            });
+            frame(w, &mut ctx, "Crafting", &["search", "close"], |w, ctx| {
+                crafting_panel(w, ctx, &names, c, local.tab, cheat);
+            });
+        }
     });
 }
 
@@ -1126,25 +1196,28 @@ fn crafting_panel(p: &mut ChildSpawnerCommands, ctx: &mut Ctx, names: &Names, c:
             && rec.ingredients.iter().all(|i| matches!(i.what, ItemOrFluid::Item(_)))
             && rec.results.iter().all(|x| matches!(x.what, ItemOrFluid::Item(_)))
     };
-    let groups: Vec<&MenuGroup> = names.menu.iter().filter(|g| g.rows.iter().flatten().any(|r| hand(*r))).collect();
+    // As in the game, every enabled recipe is listed; those that cannot be made by hand
+    // (another crafting category, or fluids) are red, those you lack ingredients for
+    // plain and without a count.
+    let shown = |r: RecipeId| enabled[r.index()];
+    let groups: Vec<&MenuGroup> = names.menu.iter().filter(|g| g.rows.iter().flatten().any(|r| shown(*r))).collect();
     let tab = tab.min(groups.len().saturating_sub(1));
-    ctx.heading(p, "Crafting");
-    // Item-group tabs.
-    p.spawn(Node { flex_direction: FlexDirection::Row, column_gap: Val::Px(2.0), ..default() }).with_children(|t| {
+    // Item-group tabs (the game's `filter_group_tab`), stretched to fill the row.
+    p.spawn(Node { flex_direction: FlexDirection::Row, width: Val::Px(PANEL_W), ..default() }).with_children(|t| {
         for (i, g) in groups.iter().enumerate() {
             let d = ctx.data.0.clone();
             let icon = ctx.sprites.get(ctx.assets, ctx.data, &format!("group:{}", g.name), || {
                 factorio_data::sprite::icon_of(&d, d.prototype("item-group", &g.name))
             });
-            // The game's `filter_group_tab`; the selected one uses its selected set.
             let l = looks();
             let mut tab_entity = t.spawn((
                 UiButton::Tab(i),
                 Button,
                 Tip::Text(names.groups.get(&g.name).cloned().unwrap_or_default()),
                 Node {
-                    width: Val::Px(71.0),
-                    height: Val::Px(64.0),
+                    flex_grow: 1.0,
+                    min_width: Val::Px(71.0),
+                    height: Val::Px(72.0),
                     justify_content: JustifyContent::Center,
                     align_items: AlignItems::Center,
                     ..default()
@@ -1170,27 +1243,80 @@ fn crafting_panel(p: &mut ChildSpawnerCommands, ctx: &mut Ctx, names: &Names, c:
                             ..default()
                         },
                         Node { width: Val::Px(64.0), height: Val::Px(64.0), ..default() },
+                        Pickable::IGNORE,
                     ));
                 }
             });
         }
     });
-    let Some(group) = groups.get(tab) else { return };
-    for row in &group.rows {
-        let recipes: Vec<RecipeId> = row.iter().copied().filter(|r| hand(*r)).collect();
-        if recipes.is_empty() {
-            continue;
-        }
-        grid(p, 10, |g| {
-            for r in recipes {
-                let can = if cheat { 1 } else { max_craftable(db, &cats, enabled, &c.inventory, r) };
-                let main = db.recipe(r).results.first().and_then(|x| match x.what {
-                    ItemOrFluid::Item(i) => Some(i),
-                    _ => None,
-                });
-                let bg = if can == 0 { SLOT_RED } else { SLOT };
-                ctx.slot(g, main, (can > 0).then_some(can), bg, Some(UiButton::Craft(r)), Some(Tip::Recipe(r)));
+    // The recipes: one row per subgroup in a deep pane tiled with empty cells.
+    panel(p, PANEL_W, |p| {
+        p.spawn(Node { flex_direction: FlexDirection::Column, flex_grow: 1.0, ..default() }).with_children(|pane| {
+            crate::gui_skin::backdrop(pane, &looks().deep_in_shallow);
+            let mut rows = 0;
+            if let Some(group) = groups.get(tab) {
+                for row in &group.rows {
+                    let recipes: Vec<RecipeId> = row.iter().copied().filter(|r| shown(*r)).collect();
+                    for chunk in recipes.chunks(10) {
+                        rows += 1;
+                        grid(pane, 10, |g| {
+                            for r in chunk {
+                                let r = *r;
+                                let by_hand = hand(r);
+                                let can = if !by_hand {
+                                    0
+                                } else if cheat {
+                                    1
+                                } else {
+                                    max_craftable(db, &cats, enabled, &c.inventory, r)
+                                };
+                                let main = db.recipe(r).results.first().and_then(|x| match x.what {
+                                    ItemOrFluid::Item(i) => Some(i),
+                                    _ => None,
+                                });
+                                let bg = if by_hand { SLOT } else { SLOT_RED };
+                                ctx.slot(
+                                    g,
+                                    main,
+                                    (can > 0).then_some(can),
+                                    bg,
+                                    Some(UiButton::Craft(r)),
+                                    Some(Tip::Recipe(r)),
+                                );
+                            }
+                            for _ in chunk.len()..10 {
+                                empty_cell(g);
+                            }
+                        });
+                    }
+                }
             }
+            // At least seven rows, as the game's pane.
+            for _ in rows..7 {
+                grid(pane, 10, |g| {
+                    for _ in 0..10 {
+                        empty_cell(g);
+                    }
+                });
+            }
+        });
+    });
+}
+
+/// An empty cell of a slot pane (`deep_slots_scroll_pane`'s tiled background).
+fn empty_cell(g: &mut ChildSpawnerCommands) {
+    let mut e = g.spawn(Node {
+        width: Val::Px(SLOT_PX),
+        height: Val::Px(SLOT_PX),
+        padding: UiRect::all(Val::Px(4.0)),
+        ..default()
+    });
+    if let Some(s) = &looks().empty_slot {
+        e.with_children(|c| {
+            c.spawn((
+                Node { width: Val::Px(32.0), height: Val::Px(32.0), ..default() },
+                crate::gui_skin::node_image(s),
+            ));
         });
     }
 }

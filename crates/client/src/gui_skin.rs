@@ -191,6 +191,8 @@ pub struct Looks {
     pub line: Option<(Handle<Image>, Rect)>,
     /// `production_progressbar`'s bar colour.
     pub production_bar_color: Color,
+    /// One empty cell of `deep_slots_scroll_pane`'s tiled background (32 px, inset 4).
+    pub empty_slot: Option<Slice>,
     /// `entity_frame_filler`'s row picture.
     pub entity_filler: Option<Slice>,
     /// `burning_progressbar`'s (fuel left).
@@ -254,6 +256,9 @@ fn resolve(mut commands: Commands, skin: Res<Skin>, data: Res<Data>, assets: Res
         deep_in_shallow: get("deep_frame_in_shallow_frame", "graphical_set").unwrap_or_else(fallback),
         line,
         production_bar_color: skin.color("production_progressbar", "color").unwrap_or(Color::srgb_u8(43, 227, 39)),
+        empty_slot: skin
+            .prop("deep_slots_scroll_pane", "background_graphical_set")
+            .and_then(|g| skin.element(g, &data, &assets)),
         entity_filler: skin.prop("entity_frame_filler", "graphical_set").and_then(|g| skin.element(g, &data, &assets)),
         burning_bar_color: skin.color("burning_progressbar", "color").unwrap_or(Color::srgb(1.0, 0.0, 0.0)),
         deep: get("inside_deep_frame", "graphical_set").unwrap_or_else(fallback),
