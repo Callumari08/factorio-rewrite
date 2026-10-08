@@ -52,17 +52,28 @@ struct ControlState {
 #[derive(Resource)]
 struct OpenLater(MapPosition);
 
+/// Something for [`open_from_env`] to mine once the character has moved next to it.
+#[derive(Resource)]
+struct MineLater(MapPosition);
+
 fn open_later(
     mut commands: Commands,
     later: Option<Res<OpenLater>>,
+    mine: Option<Res<MineLater>>,
     mut pending: ResMut<PendingInputs>,
     mut frames: Local<u32>,
 ) {
-    let Some(later) = later else { return };
     *frames += 1;
-    if *frames == 10 {
+    if *frames != 10 {
+        return;
+    }
+    if let Some(later) = later {
         pending.push(InputAction::OpenEntity(Some(later.0)));
         commands.remove_resource::<OpenLater>();
+    }
+    if let Some(m) = mine {
+        pending.push(InputAction::SetMining(Some(m.0)));
+        commands.remove_resource::<MineLater>();
     }
 }
 
@@ -80,6 +91,21 @@ fn open_from_env(mut commands: Commands, sim: Res<Sim>, mut ui: ResMut<UiState>,
         return;
     }
     ui.inventory_open = true;
+    // `FACTORIO_REWRITE_UI=mine` mines the nearest rock or tree (showing the mining bar).
+    if std::env::var("FACTORIO_REWRITE_UI").is_ok_and(|v| v == "mine") {
+        ui.inventory_open = false;
+        let near = sim
+            .0
+            .entities()
+            .filter(|(_, e)| matches!(e.state, factorio_sim::world::EntityState::Static { .. }))
+            .min_by_key(|(_, e)| (e.position.x as i64).pow(2) + (e.position.y as i64).pow(2))
+            .map(|(_, e)| e.position);
+        if let Some(p) = near {
+            pending.push(InputAction::CheatTeleport(p.offset(0, 2 * 256)));
+            commands.insert_resource(MineLater(p));
+        }
+        return;
+    }
     // `FACTORIO_REWRITE_UI=hand` picks up the first inventory stack (showing the hand).
     if std::env::var("FACTORIO_REWRITE_UI").is_ok_and(|v| v == "hand") {
         pending.push(InputAction::ClickSlot {

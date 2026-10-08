@@ -221,6 +221,11 @@ pub struct Looks {
     pub tech_card: Slice,
     /// `entity_frame_filler`'s row picture.
     pub entity_filler: Option<Slice>,
+    /// `health_progressbar` (also the mining bar): background strip, bar strip, and the
+    /// mining bar's colour.
+    pub health_bar_bg: Slice,
+    pub health_bar: Slice,
+    pub mining_color: Color,
     /// `burning_progressbar`'s (fuel left).
     pub burning_bar_color: Color,
     pub shallow: Slice,
@@ -333,6 +338,15 @@ fn resolve(mut commands: Commands, skin: Res<Skin>, data: Res<Data>, assets: Res
         ],
         tech_card: get("technology_card_frame", "graphical_set").unwrap_or_else(fallback),
         entity_filler: skin.prop("entity_frame_filler", "graphical_set").and_then(|g| skin.element(g, &data, &assets)),
+        health_bar_bg: skin
+            .prop("health_progressbar", "bar_background")
+            .and_then(|e| skin.element(e, &data, &assets))
+            .unwrap_or_else(fallback),
+        health_bar: skin
+            .prop("health_progressbar", "bar")
+            .and_then(|e| skin.element(e, &data, &assets))
+            .unwrap_or_else(fallback),
+        mining_color: skin.color("mining_progressbar", "color").unwrap_or(Color::srgb(0.98, 0.66, 0.22)),
         burning_bar_color: skin.color("burning_progressbar", "color").unwrap_or(Color::srgb(1.0, 0.0, 0.0)),
         deep: get("inside_deep_frame", "graphical_set").unwrap_or_else(fallback),
         shallow: get("inside_shallow_frame", "graphical_set").unwrap_or_else(fallback),

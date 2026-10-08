@@ -31,6 +31,7 @@ impl Plugin for UiPlugin {
         app.add_plugins(FrameTimeDiagnosticsPlugin::default())
             .add_systems(Startup, (load_names, setup, research::setup, hud::setup).chain())
             .add_systems(PostUpdate, font_weights.before(bevy::ui::UiSystems::Prepare))
+            .add_systems(Update, mining_bar)
             .add_systems(
                 Update,
                 (
@@ -137,6 +138,8 @@ struct TooltipRoot;
 struct CursorIcon;
 #[derive(Component)]
 pub(super) struct EntityInfoRoot;
+#[derive(Component)]
+struct MiningBar;
 #[derive(Component)]
 struct QueueRoot;
 /// A slot's normal background, restored when the mouse leaves it.
@@ -312,6 +315,41 @@ fn setup(mut commands: Commands, fonts: Res<Fonts>) {
         },
         crate::gui_skin::node_image(&looks().frame),
     ));
+    // The mining bar: a 13 px strip resting on the quickbar's top edge.
+    let l = looks();
+    commands
+        .spawn((
+            MiningBar,
+            Node {
+                position_type: PositionType::Absolute,
+                bottom: Val::Px(SLOT_PX * 2.0 + 8.0),
+                left: Val::Percent(50.0),
+                margin: UiRect::left(Val::Px(-QUICKBAR_W / 2.0)),
+                width: Val::Px(QUICKBAR_W),
+                height: Val::Px(13.0),
+                display: Display::None,
+                ..default()
+            },
+            ImageNode { image: l.health_bar_bg.image.clone(), rect: Some(l.health_bar_bg.rect), ..default() },
+            Pickable::IGNORE,
+        ))
+        .with_children(|b| {
+            b.spawn((
+                LiveFill(Live::Mining),
+                Node {
+                    width: Val::Percent(0.0),
+                    height: Val::Px(11.0),
+                    margin: UiRect::top(Val::Px(1.0)),
+                    ..default()
+                },
+                ImageNode {
+                    image: l.health_bar.image.clone(),
+                    rect: Some(l.health_bar.rect),
+                    color: l.mining_color,
+                    ..default()
+                },
+            ));
+        });
     // Windows are centred on the screen; the root only lays them out (each frame catches
     // the mouse itself).
     commands.spawn((
@@ -473,7 +511,6 @@ fn hud(
         last.1 = sim.0.tick();
     }
     let fps = diagnostics.get(&FrameTimeDiagnosticsPlugin::FPS).and_then(|d| d.smoothed()).unwrap_or(0.0);
-    let db = sim.0.prototypes();
     let mut lines = vec![format!("{:.0} UPS  {:.0} FPS  tick {}  checksum {:016x}", last.2, fps, sim.0.tick(), last.3)];
     if let Some(c) = character(&sim) {
         let p = c.position();
@@ -489,27 +526,8 @@ fn hud(
             .into(),
     );
     texts.p0().0 = lines.join("\n");
-    // Mining and crafting progress, like the game's bars above the quickbar.
-    let mut status = ui.status.clone();
-    if let Some(c) = character(&sim) {
-        if let Some(m) = &c.mining {
-            let ticks = match &m.target {
-                factorio_sim::player::MiningTarget::Entity(id) => {
-                    sim.0.entity(*id).and_then(|e| db.entity(e.proto).minable.as_ref())
-                }
-                factorio_sim::player::MiningTarget::Resource(t) => {
-                    sim.0.surface.resource(*t).and_then(|r| db.entity(r.proto).minable.as_ref())
-                }
-            }
-            .map(|m| m.mining_ticks.to_f64_lossy())
-            .unwrap_or(1.0);
-            status = format!("Mining  {:.0}%", m.progress.to_f64_lossy() / ticks * 100.0);
-        } else if let Some(job) = c.queue.first() {
-            let t = db.recipe(job.recipe).ticks().to_f64_lossy();
-            status =
-                format!("Crafting {}  {:.0}%", names.recipe(job.recipe), c.craft_progress.to_f64_lossy() / t * 100.0);
-        }
-    }
+    // Mining progress is the bar on the quickbar, crafting the highlighted queue slot.
+    let status = ui.status.clone();
     texts.p1().0 = status;
 }
 
@@ -1484,6 +1502,8 @@ enum Live {
     LabPack(u16),
     /// The opened pole's network satisfaction.
     Satisfaction,
+    /// The character's mining progress.
+    Mining,
 }
 
 /// The fill of a bar showing a [`Live`] value.
@@ -1499,6 +1519,9 @@ fn live_value(sim: &Sim, live: Live) -> f64 {
     let r = sim.0.research();
     if let Live::Research = live {
         return r.current().map_or(0.0, |t| r.progress_fraction(db, t).to_f64_lossy());
+    }
+    if let Live::Mining = live {
+        return mining_fraction(sim).unwrap_or(0.0);
     }
     let Some(e) = opened(sim).and_then(|id| sim.0.entity(id)) else { return 0.0 };
     let proto = db.entity(e.proto);
@@ -1540,6 +1563,29 @@ fn live_value(sim: &Sim, live: Live) -> f64 {
         _ => 0.0,
     };
     v.clamp(0.0, 1.0)
+}
+
+/// How far the character is through mining what it is mining, if anything.
+fn mining_fraction(sim: &Sim) -> Option<f64> {
+    let db = sim.0.prototypes();
+    let m = character(sim)?.mining.as_ref()?;
+    let proto = match m.target {
+        factorio_sim::player::MiningTarget::Entity(id) => sim.0.entity(id)?.proto,
+        factorio_sim::player::MiningTarget::Resource(t) => sim.0.surface.resource(t)?.proto,
+    };
+    let ticks = db.entity(proto).minable.as_ref()?.mining_ticks.to_f64_lossy();
+    Some((m.progress.to_f64_lossy() / ticks.max(1e-9)).clamp(0.0, 1.0))
+}
+
+/// The mining bar on top of the quickbar while the character mines, as in the game.
+fn mining_bar(sim: Res<Sim>, ui: Res<UiState>, mut q: Query<&mut Node, With<MiningBar>>) {
+    let show = mining_fraction(&sim).is_some() && !ui.tech_open;
+    for mut n in &mut q {
+        let d = if show { Display::Flex } else { Display::None };
+        if n.display != d {
+            n.display = d;
+        }
+    }
 }
 
 /// Updates the [`Live`] bars every frame.
