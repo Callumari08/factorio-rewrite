@@ -317,6 +317,55 @@ pub fn tile_variants(data: &GameData, name: &str) -> Vec<SpriteRef> {
         .collect()
 }
 
+/// One kind of transition piece in a tile's mask sheet: its x offset and variant count.
+/// Each variant is a column of four rotations (north, east, south, west).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MaskPieces {
+    pub x: u32,
+    pub count: u32,
+}
+
+/// A tile's transition masks (`variants.transition`): greyscale masks through which the
+/// tile is drawn over a neighbouring tile of a lower layer. White is this tile.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TileTransition {
+    pub sheet: std::path::PathBuf,
+    /// Size of one piece in pixels.
+    pub size: u32,
+    pub y: u32,
+    /// Two adjacent sides covered.
+    pub inner_corner: MaskPieces,
+    /// Only a diagonal neighbour.
+    pub outer_corner: MaskPieces,
+    pub side: MaskPieces,
+    /// Three sides.
+    pub u_transition: MaskPieces,
+    /// Surrounded.
+    pub o_transition: MaskPieces,
+}
+
+pub fn tile_transition(data: &GameData, name: &str) -> Option<TileTransition> {
+    let t = data.prototype("tile", name).get("variants").get("transition");
+    let sheet = data.resolve_path(t.get("spritesheet").as_str()?)?;
+    let l = t.get("layout");
+    let int = |k: &str, d: i64| l.get(k).as_i64().unwrap_or(d).max(0) as u32;
+    let count = int("count", 1);
+    let piece = |prefix: &str, default_x: i64, default_count: u32| MaskPieces {
+        x: int(&format!("{prefix}_x"), default_x),
+        count: l.get(&format!("{prefix}_count")).as_i64().map(|c| c.max(0) as u32).unwrap_or(default_count),
+    };
+    Some(TileTransition {
+        sheet,
+        size: (32.0 / l.get("scale").as_f64().unwrap_or(0.5)).round() as u32,
+        y: l.get("mask").get("y_offset").as_i64().unwrap_or(0).max(0) as u32,
+        inner_corner: piece("inner_corner", 0, count),
+        outer_corner: piece("outer_corner", 0, count),
+        side: piece("side", 0, count),
+        u_transition: piece("u_transition", 0, 1),
+        o_transition: piece("o_transition", 0, 1),
+    })
+}
+
 /// Underground belt structure for the entrance (`input`) or exit, 4-way sheet.
 pub fn underground_sprite(data: &GameData, name: &str, dir: usize, input: bool) -> Option<SpriteRef> {
     let (_, _, proto) = data.prototypes_in_category("entity").find(|(_, n, _)| *n == name)?;
