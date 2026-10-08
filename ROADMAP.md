@@ -48,24 +48,29 @@ Each step ends with a playtest. Feedback from it becomes a ".5" step before the 
    about 73% of the game's, and rare ores such as uranium are far too common: compare
    per-ore patch counts and amounts with `--generate-map-preview --report-quantities`);
    the animated water shader; zooming out past 0.3 into the map view.
-1. **GUI parity (reopened; first pass only).** Checklist, each compared side by side with
-   the game:
-   - [ ] GUI skin from the game's own sprite sheets (`__core__/graphics/gui*`): frames,
-         title bars, inner panels, slot buttons, tabs, scrollbars, buttons, progress bars.
-   - [ ] Exact window layouts and sizes at the default UI scale: character window
-         (character, inventory, crafting with item-group tabs and subgroup rows, logistics
-         and armor sections), entity windows, quickbar, crafting queue, research HUD.
-   - [ ] Fonts and text styles as the game's GUI styles (sizes, colours, shadows).
-   - [ ] Tooltips laid out as in the game (recipe/item/entity tooltips with icons,
-         ingredients, totals, crafting time, "Ctrl+click" hints).
-   - [ ] Entity hover info panel (right side "selected entity" info).
-   - [ ] Drag-spreading items across slots with the cursor stack (left and right drag).
-   - [ ] Technology tree view as in 2.0 (graph of technologies, zoom, search) instead of
-         the grid, with the game's tech slot styles and queue.
-   - [ ] Slot details: count fonts, red/green slot states, filters, hover highlight,
-         item quality/progress bars on slots.
-   - [ ] Minimap and map view (M), alerts panel position, shortcut bar.
-   - [ ] Keyboard and mouse behaviour audit against the game's default controls.
+1. **GUI parity (in progress).** Every window and panel we have, each to be compared
+   side by side with a capture from the real game (`scratchpad` capture mod `guishot`:
+   one run shoots all of them; real Factorio is launched only with Callum's go-ahead).
+   [x] = matches its capture; [~] = rebuilt in the game's layout, details left.
+   - Shared: [x] skin from `gui-style` (frames, deep/shallow panels, slots, tabs, bars),
+     [x] window frame with title bar, draggable filler and close button, [~] fonts and
+     text styles, [ ] drag-spreading with the cursor stack, [x] hand slot, [ ] slot
+     details (quality, filters, progress bars on slots), [ ] keyboard/mouse audit.
+   - Character window (E): [~] inventory panel, [ ] crafting panel (item-group tabs,
+     subgroup rows, empty cells as in the game), [ ] logistics, armor and gun slots,
+     [ ] inventory toolbar (sort, trash).
+   - Entity windows: [x] assembling machines, [x] furnaces, [~] chests (inventory-limit
+     button, deep frame), [ ] mining drills (burner, electric), [ ] inserters (burner,
+     normal, long), [ ] transport belt, underground belt, splitter, [ ] boiler, steam
+     engine, offshore pump, pipe (fluid boxes), [ ] electric poles (network info and
+     graphs), [ ] lab (science slots and research), [ ] radar, walls.
+   - Hover info panel (the selected entity's details at the side): [ ] all entities.
+   - Tooltips: [ ] item, [ ] recipe (ingredients, time, totals, hints), [ ] technology,
+     [ ] entity.
+   - HUD: [ ] quickbar, [ ] crafting queue, [ ] research progress (top right),
+     [ ] minimap, [ ] shortcut bar, [ ] alerts.
+   - Technology: [ ] 2.0 tech tree view (graph, zoom, search, queue, tech slot styles).
+   - Menus: [ ] settings (sound and the rest of the options menu), [ ] map view (M).
 
 ## Next: the rest of step 3, in order
 5. **Inserters and poles.** Inserters reaching for moving belt items, stack bonuses, filter
