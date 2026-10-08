@@ -43,16 +43,33 @@ fn fade(t: f32) -> f32 {
     t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
 }
 
+/// The per-layer seed of a noise layer.
+pub fn layer_seed(seed0: u32, seed1: u32) -> u32 {
+    hash32(seed0 ^ hash32(seed1.wrapping_add(0x9E37_79B9)))
+}
+
+fn corner_hash(seed: u32, x: i32, y: i32) -> u32 {
+    let mut h = seed ^ (x as u32).wrapping_mul(0x9E37_79B1) ^ (y as u32).wrapping_mul(0x85EB_CA77);
+    h ^= h >> 15;
+    h = h.wrapping_mul(0x2C1B_3C6D);
+    h ^= h >> 12;
+    h = h.wrapping_mul(0x297A_2D39);
+    h ^ (h >> 15)
+}
+
 /// Single-octave gradient noise at `(x, y)` (already scaled), about -1..1.
 pub fn basis(seed0: u32, seed1: u32, x: f32, y: f32) -> f32 {
+    basis_seeded(layer_seed(seed0, seed1), x, y)
+}
+
+/// [`basis`] with the layer seed already computed.
+pub fn basis_seeded(seed: u32, x: f32, y: f32) -> f32 {
     let fx = x.floor();
     let fy = y.floor();
     let (ix, iy) = (fx as i32, fy as i32);
     let (tx, ty) = (x - fx, y - fy);
-    let seed = hash32(seed0 ^ hash32(seed1.wrapping_add(0x9E37_79B9)));
     let grad = |cx: i32, cy: i32, dx: f32, dy: f32| {
-        let h = hash4(seed, cx as u32, cy as u32, 0x5bd1_e995);
-        let (gx, gy) = GRADIENTS[(h & 7) as usize];
+        let (gx, gy) = GRADIENTS[(corner_hash(seed, cx, cy) & 7) as usize];
         gx * dx + gy * dy
     };
     let n00 = grad(ix, iy, tx, ty);
@@ -65,9 +82,10 @@ pub fn basis(seed0: u32, seed1: u32, x: f32, y: f32) -> f32 {
     (a + (b - a) * v) * BASIS_AMPLITUDE
 }
 
-/// Scales raw gradient noise (about ±0.25 typical) to the game's apparent amplitude. Chosen
-/// by comparing generated maps with the game: at 2 the base expressions give Nauvis's
-/// mix of grass and desert and its many lakes.
+/// Scales raw gradient noise (standard deviation 0.27) to the game's apparent amplitude.
+/// The game's value is not known; at 2 Nauvis's own expressions give lakes on about a
+/// tenth of the map and its mix of grass, dirt and desert. Lower values give almost no
+/// water, so this is the calibration to revisit if a better reference turns up.
 const BASIS_AMPLITUDE: f32 = 2.0;
 
 /// `fastapprox`'s `fastlog2`.

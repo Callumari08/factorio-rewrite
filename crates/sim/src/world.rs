@@ -99,6 +99,8 @@ pub enum InsertSource {
 
 /// How many tiles around each character are kept generated.
 const GENERATE_RADIUS_CHUNKS: i32 = 3;
+/// Chunks beyond the character's neighbours generated per tick.
+const CHUNKS_PER_TICK: u32 = 1;
 
 /// The complete deterministic game state.
 #[derive(Clone, Debug)]
@@ -195,8 +197,9 @@ impl Simulation {
 
         let positions: Vec<MapPosition> =
             self.players.values().filter_map(|p| p.character.as_ref()).map(|c| c.position()).collect();
+        let mut budget = CHUNKS_PER_TICK;
         for p in positions {
-            self.generate_around(p);
+            self.generate_gradually(p, &mut budget);
         }
 
         let ids: Vec<u16> = self.players.keys().copied().collect();
@@ -216,12 +219,38 @@ impl Simulation {
         self.tick += 1;
     }
 
+    /// Generates every chunk within [`GENERATE_RADIUS_CHUNKS`] of `p`.
     fn generate_around(&mut self, p: MapPosition) {
         let c = p.tile().chunk();
         for y in c.y - GENERATE_RADIUS_CHUNKS..=c.y + GENERATE_RADIUS_CHUNKS {
             for x in c.x - GENERATE_RADIUS_CHUNKS..=c.x + GENERATE_RADIUS_CHUNKS {
                 self.surface.ensure_chunk(ChunkPosition { x, y });
             }
+        }
+    }
+
+    /// Per tick: the chunks next to `p` at once, and at most [`CHUNKS_PER_TICK`] further
+    /// ones (nearest first), so walking into new land does not stall a frame.
+    fn generate_gradually(&mut self, p: MapPosition, budget: &mut u32) {
+        let c = p.tile().chunk();
+        let mut missing: Vec<(i32, ChunkPosition)> = Vec::new();
+        for y in c.y - GENERATE_RADIUS_CHUNKS..=c.y + GENERATE_RADIUS_CHUNKS {
+            for x in c.x - GENERATE_RADIUS_CHUNKS..=c.x + GENERATE_RADIUS_CHUNKS {
+                let pos = ChunkPosition { x, y };
+                if !self.surface.is_generated(pos) {
+                    missing.push(((x - c.x).abs().max((y - c.y).abs()), pos));
+                }
+            }
+        }
+        missing.sort();
+        for (ring, pos) in missing {
+            if ring > 1 {
+                if *budget == 0 {
+                    break;
+                }
+                *budget -= 1;
+            }
+            self.surface.ensure_chunk(pos);
         }
     }
 

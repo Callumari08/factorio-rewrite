@@ -23,12 +23,15 @@ Read this first when picking the project up in a new session. See also
 - Step 3 item 4 (map generation parity) is in progress. `crates/sim/src/mapgen/` parses,
   compiles and evaluates the game's noise expressions (all of Nauvis's compile);
   `crates/data/src/mapgen.rs` `planet_mapgen` feeds it the planet's tiles and resources.
-  It is opt-in (`FACTORIO_REWRITE_NOISE_MAPGEN=1`) until the starting area is right: the
-  starting ore patches currently spread over the spawn. `cargo run --release -p
-  factorio-data --example mapimage -- map.ppm 24` renders a map for checking. Still to do:
-  starting area, patch shapes, trees, rocks, decoratives, cliffs, tile transitions.
+  It is the default (`FACTORIO_REWRITE_SIMPLE_MAPGEN=1` gives the old generator). Spot
+  noise regions are centred on the origin, which keeps each starting patch whole. Chunks
+  beyond the character's neighbours generate one per tick. `cargo run --release -p
+  factorio-data --example mapimage -- map.ppm 24 [seed]` renders a map for checking. Still
+  to do: trees, rocks, decoratives, cliffs, tile transitions, crude oil.
   Factorio's basis noise algorithm is not public; ours is gradient noise with its amplitude
-  calibrated visually (`BASIS_AMPLITUDE`), so maps follow the game's rules but not its seeds.
+  calibrated (`BASIS_AMPLITUDE`), and the octave conventions of `multioctave_noise` are
+  inferred from how the base expressions use them, so maps follow the game's rules but not
+  its seeds. Moisture varies a lot between seeds (some spawn in dirt or desert).
 - All tests pass: `cargo test --workspace` (sim unit tests, plus gameplay tests in
   `crates/data/tests/` that load the real game and check values such as tick timings and
   throughputs).

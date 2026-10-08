@@ -74,6 +74,16 @@ fn binary(op: BinOp, a: f32, b: f32) -> f32 {
     }
 }
 
+/// Amplitude and input scale of the largest octave of (variable persistence) multioctave
+/// noise; each following octave has twice the frequency and `persistence` times the
+/// amplitude.
+fn multioctave_start(op: &Op, p: &NoiseParams) -> (f32, f32) {
+    // The game's `amplitude_corrected_multioctave_noise` divides by 2^octaves times the sum
+    // of the persistence series, so variable persistence noise starts 2^octaves louder.
+    let vp = matches!(op, Op::VariablePersistence(_));
+    (p.output_scale * if vp { pow_int(2.0, p.octaves as i32) } else { 1.0 }, p.input_scale)
+}
+
 /// Octave sums. `persistence` is per point for variable-persistence noise.
 fn octaves(op: &Op, p: &NoiseParams, x: f32, y: f32, persistence: f32) -> f32 {
     let (x, y) = (x + p.offset_x, y + p.offset_y);
@@ -83,11 +93,7 @@ fn octaves(op: &Op, p: &NoiseParams, x: f32, y: f32, persistence: f32) -> f32 {
             // Octave 0 is the largest; each next one has twice the frequency and
             // `persistence` times the amplitude.
             let pers = if matches!(op, Op::Multioctave(_)) { p.persistence } else { persistence };
-            let mut amp = p.output_scale;
-            if matches!(op, Op::VariablePersistence(_)) {
-                amp *= pow_int(2.0, p.octaves as i32);
-            }
-            let mut scale = p.input_scale;
+            let (mut amp, mut scale) = multioctave_start(op, p);
             let mut sum = 0.0;
             for k in 0..p.octaves {
                 sum += amp * basis(p.seed0.wrapping_add(k), p.seed1, x * scale, y * scale);
@@ -109,6 +115,50 @@ fn octaves(op: &Op, p: &NoiseParams, x: f32, y: f32, persistence: f32) -> f32 {
         }
         _ => 0.0,
     }
+}
+
+/// [`octaves`] over many points, octave by octave (same results).
+fn octaves_vec(op: &Op, p: &NoiseParams, xs: &[f32], ys: &[f32], persistence: Option<&Vec<f32>>) -> Vec<f32> {
+    let mut sum = vec![0.0f32; xs.len()];
+    // Per point amplitude for variable persistence, else one amplitude for all.
+    let mut amps: Vec<f32> = Vec::new();
+    let (mut amp, mut scale) = match op {
+        Op::Multioctave(_) | Op::VariablePersistence(_) => multioctave_start(op, p),
+        _ => (p.output_scale, p.input_scale),
+    };
+    if matches!(op, Op::VariablePersistence(_)) {
+        amps = vec![amp; xs.len()];
+    }
+    let count = if matches!(op, Op::Basis(_)) { 1 } else { p.octaves };
+    for k in 0..count {
+        let seed0 = match op {
+            Op::QuickMultioctave(_) => p.seed0.wrapping_add(k * p.octave_seed0_shift),
+            Op::Basis(_) => p.seed0,
+            _ => p.seed0.wrapping_add(k),
+        };
+        let seed = super::basis::layer_seed(seed0, p.seed1);
+        for i in 0..xs.len() {
+            let n = super::basis::basis_seeded(seed, (xs[i] + p.offset_x) * scale, (ys[i] + p.offset_y) * scale);
+            sum[i] += if amps.is_empty() { amp * n } else { amps[i] * n };
+        }
+        match op {
+            Op::QuickMultioctave(_) => {
+                amp *= p.octave_output_scale_multiplier;
+                scale *= p.octave_input_scale_multiplier;
+            }
+            Op::VariablePersistence(_) => {
+                for (a, pers) in amps.iter_mut().zip(persistence.unwrap().iter()) {
+                    *a *= pers;
+                }
+                scale *= 2.0;
+            }
+            _ => {
+                amp *= p.persistence;
+                scale *= 2.0;
+            }
+        }
+    }
+    sum
 }
 
 fn unit_random(seed: u32, x: f32, y: f32) -> f32 {
@@ -178,6 +228,39 @@ pub fn scalar(op: &Op, a: &[f32]) -> f32 {
     }
 }
 
+/// Tight loops for the common operations (same results as [`scalar`]).
+fn vector(op: &Op, a: &[&Vec<f32>]) -> Option<Vec<f32>> {
+    let map1 = |f: &dyn Fn(f32) -> f32| a[0].iter().map(|x| f(*x)).collect::<Vec<f32>>();
+    let map2 = |f: &dyn Fn(f32, f32) -> f32| a[0].iter().zip(a[1].iter()).map(|(x, y)| f(*x, *y)).collect::<Vec<f32>>();
+    Some(match op {
+        Op::Neg => map1(&|x| -x),
+        Op::Abs => map1(&|x| x.abs()),
+        Op::Sqrt => map1(&|x| x.sqrt()),
+        Op::PowInt(n) => map1(&|x| pow_int(x, *n)),
+        Op::Bin(BinOp::Add) => map2(&|x, y| x + y),
+        Op::Bin(BinOp::Sub) => map2(&|x, y| x - y),
+        Op::Bin(BinOp::Mul) => map2(&|x, y| x * y),
+        Op::Bin(BinOp::Div) => map2(&|x, y| x / y),
+        Op::Bin(b) => map2(&|x, y| binary(*b, x, y)),
+        Op::Min | Op::Max => {
+            let mut out = a[0].clone();
+            for v in &a[1..] {
+                for (o, x) in out.iter_mut().zip(v.iter()) {
+                    *o = if matches!(op, Op::Min) { o.min(*x) } else { o.max(*x) };
+                }
+            }
+            out
+        }
+        Op::Clamp => a[0].iter().zip(a[1].iter()).zip(a[2].iter()).map(|((v, lo), hi)| clamp(*v, *lo, *hi)).collect(),
+        Op::If => {
+            a[0].iter().zip(a[1].iter()).zip(a[2].iter()).map(|((c, t), f)| if *c > 0.0 { *t } else { *f }).collect()
+        }
+        Op::Basis(p) | Op::Multioctave(p) | Op::QuickMultioctave(p) => octaves_vec(op, p, a[0], a[1], None),
+        Op::VariablePersistence(p) => octaves_vec(op, p, a[0], a[1], Some(a[2])),
+        _ => return None,
+    })
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Spot {
     pub x: f32,
@@ -229,13 +312,16 @@ impl Evaluator<'_> {
                 op => {
                     let inputs: Vec<&Vec<f32>> =
                         node.args.iter().map(|a| values[*a as usize].as_ref().unwrap()).collect();
-                    (0..len)
-                        .map(|i| {
-                            args.clear();
-                            args.extend(inputs.iter().map(|v| v[i]));
-                            scalar(op, &args)
-                        })
-                        .collect()
+                    match vector(op, &inputs) {
+                        Some(v) => v,
+                        None => (0..len)
+                            .map(|i| {
+                                args.clear();
+                                args.extend(inputs.iter().map(|v| v[i]));
+                                scalar(op, &args)
+                            })
+                            .collect(),
+                    }
                 }
             };
             values[id] = Some(out);
@@ -250,8 +336,11 @@ impl Evaluator<'_> {
         let mut regions: Vec<(i32, i32, Arc<Vec<Spot>>)> = Vec::new();
         for (x, y) in xs.iter().zip(ys) {
             let mut v = p.basement_value;
-            for ry in ((y - reach) / r).floor() as i32..=((y + reach) / r).floor() as i32 {
-                for rx in ((x - reach) / r).floor() as i32..=((x + reach) / r).floor() as i32 {
+            // Regions are centred on the origin (region 0 spans -size/2..size/2), so the
+            // starting area's spots come from one region around the spawn.
+            let h = r / 2.0;
+            for ry in ((y - reach + h) / r).floor() as i32..=((y + reach + h) / r).floor() as i32 {
+                for rx in ((x - reach + h) / r).floor() as i32..=((x + reach + h) / r).floor() as i32 {
                     let spots = match regions.iter().find(|(a, b, _)| *a == rx && *b == ry) {
                         Some((_, _, s)) => s.clone(),
                         None => {
@@ -296,7 +385,7 @@ impl Evaluator<'_> {
         for _ in 0..p.candidate_points {
             let mut candidate = (0.0, 0.0);
             for _attempt in 0..10 {
-                candidate = (rx as f32 * r + next() * r, ry as f32 * r + next() * r);
+                candidate = (rx as f32 * r - r / 2.0 + next() * r, ry as f32 * r - r / 2.0 + next() * r);
                 let spaced = points.iter().all(|(px, py)| {
                     let (dx, dy) = (px - candidate.0, py - candidate.1);
                     dx * dx + dy * dy >= p.spacing * p.spacing

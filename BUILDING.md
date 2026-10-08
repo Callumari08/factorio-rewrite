@@ -74,6 +74,8 @@ Optional environment variables:
 - `FACTORIO_REWRITE_UI=1` (or `power`, `lab`, `tech`) opens a window at start, for screenshots;
   `FACTORIO_REWRITE_TECH=<name>` selects a technology in the technology window.
 - `FACTORIO_REWRITE_SEED=1234` picks a different map.
+- `FACTORIO_REWRITE_SIMPLE_MAPGEN=1` uses the older simple terrain generator instead of the
+  game's own noise expressions.
 - `FACTORIO_REWRITE_SOUND_LOG=1` logs every sound that starts, with its volume.
 - `FACTORIO_REWRITE_SCREENSHOT=shot.png` (with `FACTORIO_REWRITE_SCREENSHOT_AFTER=10`)
   saves a screenshot after that many seconds and exits.
