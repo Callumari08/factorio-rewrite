@@ -553,43 +553,91 @@ pub(super) fn lab_panel(
     };
     let r = ctx.research;
     let db = ctx.db;
-    match r.current() {
-        Some(t) => {
-            p.spawn(Node {
-                flex_direction: FlexDirection::Row,
-                column_gap: Val::Px(8.0),
-                align_items: AlignItems::Center,
-                ..default()
-            })
-            .with_children(|row| {
-                ctx.tech_icon(row, t, 40.0);
-                ctx.text(row, format!("Researching {}", names.tech(r, t)), 15.0, TEXT);
-            });
-            progress_bar_live(p, r.progress_fraction(db, t).to_f64_lossy(), PROGRESS, Some(Live::Research));
-        }
-        None => ctx.text(p, "No research in progress. Press T to choose one.", 14.0, TEXT),
-    }
-    ctx.text(p, "Science packs", 14.0, HEADING);
-    grid(p, 10, |g| {
+    // Science pack slots: an empty slot shows its pack pale, a filled one the opened
+    // pack's durability as a green bar along its bottom.
+    let n = lab.input.slots().len();
+    slot_row(p, ctx, n, |row, ctx| {
         for (i, s) in lab.input.slots().iter().enumerate() {
-            g.spawn(Node { flex_direction: FlexDirection::Column, ..default() }).with_children(|c| {
+            row.spawn(Node { width: Val::Px(SLOT_PX), height: Val::Px(SLOT_PX), ..default() }).with_children(|c| {
                 ctx.slot(
                     c,
                     s.map(|s| s.item),
                     s.map(|s| s.count),
                     SLOT,
                     Some(UiButton::Slot(SlotRef::Opened(EntityInventory::Input, i as u16))),
-                    // Empty slots name the pack they take.
                     inputs.get(i).map(|p| Tip::Item(*p)),
                 );
-                // Durability left in the opened pack.
-                progress_bar_live(
-                    c,
-                    lab.opened_fraction(i).to_f64_lossy(),
-                    Color::srgb(0.3, 0.55, 0.85),
-                    Some(Live::LabPack(i as u16)),
-                );
+                if s.is_none() {
+                    if let Some(pack) = inputs.get(i) {
+                        c.spawn((
+                            Node {
+                                position_type: PositionType::Absolute,
+                                left: Val::Px(4.0),
+                                top: Val::Px(4.0),
+                                width: Val::Px(32.0),
+                                height: Val::Px(32.0),
+                                ..default()
+                            },
+                            Pickable::IGNORE,
+                        ))
+                        .with_children(|g| ctx.icon_tinted(g, *pack, 32.0, Color::srgba(1.0, 1.0, 1.0, 0.35)));
+                    }
+                } else {
+                    c.spawn((
+                        Node {
+                            position_type: PositionType::Absolute,
+                            left: Val::Px(4.0),
+                            right: Val::Px(4.0),
+                            bottom: Val::Px(3.0),
+                            height: Val::Px(2.0),
+                            ..default()
+                        },
+                        Pickable::IGNORE,
+                    ))
+                    .with_children(|b| {
+                        b.spawn((
+                            Node {
+                                width: Val::Percent((lab.opened_fraction(i).to_f64_lossy() * 100.0) as f32),
+                                height: Val::Percent(100.0),
+                                ..default()
+                            },
+                            BackgroundColor(Color::srgb(0.2, 0.85, 0.2)),
+                            LiveFill(Live::LabPack(i as u16)),
+                        ));
+                    });
+                }
             });
         }
     });
+    // The research being done: name and progress, and its picture on the right.
+    p.spawn(Node { flex_direction: FlexDirection::Row, height: Val::Px(108.0), ..default() }).with_children(|area| {
+        area.spawn(Node {
+            flex_grow: 1.0,
+            flex_direction: FlexDirection::Column,
+            justify_content: JustifyContent::Center,
+            row_gap: Val::Px(8.0),
+            padding: UiRect::all(Val::Px(12.0)),
+            ..default()
+        })
+        .with_children(|left| {
+            crate::gui_skin::backdrop(left, &looks().deep_in_shallow);
+            if let Some(t) = r.current() {
+                ctx.text(left, names.tech(r, t), 15.0, Color::WHITE);
+                progress_bar_live(left, r.progress_fraction(db, t).to_f64_lossy(), PROGRESS, Some(Live::Research));
+            }
+        });
+        area.spawn(Node {
+            width: Val::Px(80.0),
+            justify_content: JustifyContent::Center,
+            align_items: AlignItems::Center,
+            ..default()
+        })
+        .with_children(|right| {
+            crate::gui_skin::backdrop(right, &looks().deep_in_shallow);
+            if let Some(t) = r.current() {
+                ctx.tech_icon(right, t, 64.0);
+            }
+        });
+    });
+    module_row(p, ctx, proto);
 }

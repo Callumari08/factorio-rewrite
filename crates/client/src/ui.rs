@@ -572,6 +572,10 @@ impl Ctx<'_> {
     }
 
     fn icon(&mut self, p: &mut ChildSpawnerCommands, item: ItemId, size: f32) {
+        self.icon_tinted(p, item, size, Color::WHITE);
+    }
+
+    fn icon_tinted(&mut self, p: &mut ChildSpawnerCommands, item: ItemId, size: f32, color: Color) {
         let name = self.db.item(item).name.clone();
         if let Some(icon) = self.sprites.item_icon(self.assets, self.data, &name) {
             let s = &icon.sprite;
@@ -579,9 +583,11 @@ impl Ctx<'_> {
                 ImageNode {
                     image: icon.image.clone(),
                     rect: Some(Rect::new(s.x as f32, s.y as f32, (s.x + s.width) as f32, (s.y + s.height) as f32)),
+                    color,
                     ..default()
                 },
                 Node { width: Val::Px(size), height: Val::Px(size), ..default() },
+                Pickable::IGNORE,
             ));
         }
     }
@@ -1126,6 +1132,16 @@ fn window(
         .unwrap_or_else(|| "Character".to_owned());
     commands.entity(root).with_children(|w| match opened {
         // An entity: one frame, the character's inventory beside the entity's panel.
+        // Entities without item slots: just their panel, no inventory (as in the game).
+        Some(id) if !shows_inventory(&sim, id) => {
+            let pole = sim.0.entity(id).is_some_and(|e| matches!(e.state, EntityState::Pole));
+            let title = if pole { "Electric network info".to_owned() } else { title.clone() };
+            frame(w, &mut ctx, &title, &["close"], |w, ctx| {
+                panel(w, if pole { NETWORK_COL_W * 3.0 + 24.0 + 24.0 } else { PANEL_W }, |p| {
+                    entity_panel(p, ctx, &sim, &names, id, &local, &chart, &mut images, &checker)
+                });
+            })
+        }
         Some(id) => frame(w, &mut ctx, &title, &["close"], |w, ctx| {
             w.spawn(Node { flex_direction: FlexDirection::Row, column_gap: Val::Px(12.0), ..default() }).with_children(
                 |w| {
@@ -1303,6 +1319,52 @@ fn crafting_panel(p: &mut ChildSpawnerCommands, ctx: &mut Ctx, names: &Names, c:
     });
 }
 
+/// A slot showing a pale placeholder picture (empty module, inserter hand, science pack).
+fn ghost_slot(p: &mut ChildSpawnerCommands, ctx: &mut Ctx, sprite: &str) {
+    let look = &looks().slot;
+    p.spawn((
+        Node {
+            width: Val::Px(SLOT_PX),
+            height: Val::Px(SLOT_PX),
+            justify_content: JustifyContent::Center,
+            align_items: AlignItems::Center,
+            ..default()
+        },
+        crate::gui_skin::node_image(&look.default),
+        look.clone(),
+        Interaction::default(),
+    ))
+    .with_children(|c| ctx.utility(c, sprite, 32.0));
+}
+
+/// A row of ten slot cells: `f` spawns the first `n`, empty cells fill the rest.
+fn slot_row(
+    p: &mut ChildSpawnerCommands,
+    ctx: &mut Ctx,
+    n: usize,
+    f: impl FnOnce(&mut ChildSpawnerCommands, &mut Ctx),
+) {
+    p.spawn(Node { flex_direction: FlexDirection::Row, ..default() }).with_children(|r| {
+        f(r, ctx);
+        for _ in n..10 {
+            empty_cell(r);
+        }
+    });
+}
+
+/// The entity's module slots (empty: modules are not implemented yet), if it has any.
+fn module_row(p: &mut ChildSpawnerCommands, ctx: &mut Ctx, proto: &factorio_sim::proto::EntityProto) {
+    let n = ctx.data.0.prototype(&proto.kind, &proto.name).get("module_slots").as_i64().unwrap_or(0) as usize;
+    if n == 0 {
+        return;
+    }
+    slot_row(p, ctx, n, |r, ctx| {
+        for _ in 0..n {
+            ghost_slot(r, ctx, "empty_module_slot");
+        }
+    });
+}
+
 /// An empty cell of a slot pane (`deep_slots_scroll_pane`'s tiled background).
 fn empty_cell(g: &mut ChildSpawnerCommands) {
     let mut e = g.spawn(Node {
@@ -1318,6 +1380,16 @@ fn empty_cell(g: &mut ChildSpawnerCommands) {
                 crate::gui_skin::node_image(s),
             ));
         });
+    }
+}
+
+/// Whether an entity's window includes the character's inventory: only for entities
+/// with item slots.
+fn shows_inventory(sim: &Sim, id: EntityId) -> bool {
+    match sim.0.entity(id).map(|e| &e.state) {
+        Some(EntityState::Belt | EntityState::Pole) => false,
+        Some(EntityState::Fluid(f)) => f.energy.burner().is_some(),
+        _ => true,
     }
 }
 
@@ -1591,7 +1663,13 @@ fn entity_panel(
                 .and_then(|r| db.entity(r.proto).minable.as_ref())
                 .map(|m| m.mining_ticks.to_f64_lossy())
                 .unwrap_or(1.0);
-            progress_bar_live(p, d.progress.to_f64_lossy() / ticks, PROGRESS, Some(Live::Drill));
+            p.spawn(Node { flex_direction: FlexDirection::Row, ..default() }).with_children(|r| {
+                production_bar(r, ctx, (d.progress.to_f64_lossy() / ticks).clamp(0.0, 1.0), Live::Drill)
+            });
+            module_row(p, ctx, proto);
+            if d.energy.burner().is_some() {
+                separator(p);
+            }
             fuel_slots(p, ctx, &d.energy);
         }
         EntityState::Crafter(c) => {
@@ -1660,29 +1738,22 @@ fn entity_panel(
                 let n = c.output.slots().len().max(1);
                 ctx.inventory(r, &c.output, n, |i| SlotRef::Opened(EntityInventory::Output, i as u16));
             });
+            module_row(p, ctx, proto);
             fuel_slots(p, ctx, &c.energy);
         }
         EntityState::Inserter(i) => {
-            if let Some(h) = i.hand {
-                ctx.text(p, format!("Holding: {}", names.item(h.item)), 14.0, TEXT);
+            // The stack in the hand.
+            slot_row(p, ctx, 1, |r, ctx| match i.hand {
+                Some(h) => ctx.slot(r, Some(h.item), Some(h.count), SLOT, None, None),
+                None => ghost_slot(r, ctx, "empty_inserter_hand_slot"),
+            });
+            if i.energy.burner().is_some() {
+                separator(p);
             }
             fuel_slots(p, ctx, &i.energy);
         }
-        EntityState::Fluid(f) => {
-            for b in &f.boxes {
-                let fluid = b.fluid.map(|x| db.fluid(x).name.clone()).unwrap_or("Empty".into());
-                ctx.text(
-                    p,
-                    format!("{}  {:.0} at {:.0} °C", fluid, b.amount.to_f64_lossy(), b.temperature.to_f64_lossy()),
-                    14.0,
-                    TEXT,
-                );
-            }
-            if matches!(proto.data, EntityData::Generator { .. }) {
-                ctx.text(p, format!("Output: {}", crate::chart::power_text(f.last_power.to_f64_lossy())), 14.0, TEXT);
-            }
-            fuel_slots(p, ctx, &f.energy);
-        }
+        // Fluid contents and power output are shown in the hover info panel, not here.
+        EntityState::Fluid(f) => fuel_slots(p, ctx, &f.energy),
         EntityState::Pole => network_window(p, ctx, sim, id, chart, images),
         EntityState::Lab(l) => research::lab_panel(p, ctx, names, proto, l),
         _ => {}
@@ -1762,6 +1833,97 @@ fn recipe_chooser(
     }
 }
 
+/// Width of a column of the electric network window (the game's `production_graph_width`).
+const NETWORK_COL_W: f32 = 556.0;
+
+/// A bar with its text inside on the right (the game's network and production bars).
+fn value_bar(p: &mut ChildSpawnerCommands, ctx: &Ctx, fraction: f64, color: Color, text: String, live: Option<Live>) {
+    let l = looks();
+    p.spawn((
+        Node {
+            width: Val::Percent(100.0),
+            height: Val::Px(24.0),
+            justify_content: JustifyContent::FlexEnd,
+            align_items: AlignItems::Center,
+            padding: UiRect::right(Val::Px(8.0)),
+            ..default()
+        },
+        crate::gui_skin::node_image(&l.bar_background),
+    ))
+    .with_children(|b| {
+        let mut bar = crate::gui_skin::node_image(&l.bar);
+        bar.color = color;
+        let mut fill = b.spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(0.0),
+                top: Val::Px(0.0),
+                width: Val::Percent((fraction.clamp(0.0, 1.0) * 100.0) as f32),
+                height: Val::Percent(100.0),
+                ..default()
+            },
+            bar,
+        ));
+        if let Some(live) = live {
+            fill.insert(LiveFill(live));
+        }
+        b.spawn((
+            Text::new(text),
+            TextFont { font: ctx.fonts.regular.clone(), font_size: 14.0, ..default() },
+            TextColor(Color::WHITE),
+        ));
+    });
+}
+
+/// A titled section of the network window: a subheader with the title (and optional
+/// reset button) over its contents.
+fn network_section(
+    p: &mut ChildSpawnerCommands,
+    ctx: &mut Ctx,
+    title: &str,
+    reset: bool,
+    f: impl FnOnce(&mut ChildSpawnerCommands, &mut Ctx),
+) {
+    p.spawn(Node { width: Val::Px(NETWORK_COL_W), flex_direction: FlexDirection::Column, ..default() }).with_children(
+        |col| {
+            crate::gui_skin::backdrop(col, &looks().deep_in_shallow);
+            col.spawn(Node {
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                height: Val::Px(36.0),
+                padding: UiRect::axes(Val::Px(12.0), Val::Px(0.0)),
+                ..default()
+            })
+            .with_children(|h| {
+                h.spawn((
+                    Text::new(title),
+                    TextFont { font: ctx.fonts.bold.clone(), font_size: 15.0, ..default() },
+                    TextColor(looks().title_color),
+                    Node { flex_grow: 1.0, ..default() },
+                ));
+                if reset {
+                    let l = looks();
+                    h.spawn((
+                        Node {
+                            width: Val::Px(28.0),
+                            height: Val::Px(28.0),
+                            justify_content: JustifyContent::Center,
+                            align_items: AlignItems::Center,
+                            ..default()
+                        },
+                        crate::gui_skin::node_image(&l.red_button.default),
+                        l.red_button.clone(),
+                        Button,
+                        Tip::Text("Reset".into()),
+                    ))
+                    .with_children(|b| ctx.utility(b, "reset", 24.0));
+                }
+            });
+            f(col, ctx);
+        },
+    );
+}
+
 fn network_window(
     p: &mut ChildSpawnerCommands,
     ctx: &mut Ctx,
@@ -1770,70 +1932,169 @@ fn network_window(
     chart: &crate::chart::Chart,
     images: &mut Assets<Image>,
 ) {
-    use crate::chart::{PALETTE, PRODUCTION, power_text};
+    use crate::chart::{PALETTE, power_text};
     let db = ctx.db;
     let Some(n) = sim.0.power.electric_network_of.get(&id).map(|n| &sim.0.power.electric_networks[*n]) else {
         ctx.text(p, "Not connected", 14.0, TEXT);
         return;
     };
-    ctx.text(
-        p,
-        format!(
-            "Satisfaction {:.0}%    Production {} / {}",
-            n.satisfaction().to_f64_lossy() * 100.0,
-            power_text(n.production.to_f64_lossy()),
-            power_text(n.capacity.to_f64_lossy())
-        ),
-        14.0,
-        TEXT,
-    );
-    progress_bar_live(p, n.satisfaction().to_f64_lossy(), PROGRESS, Some(Live::Satisfaction));
-    let Some(stats) = sim.0.power.stats_for(id) else { return };
-    crate::chart::draw(images, chart, stats);
+    let watts = |e: factorio_sim::Fixed| power_text(e.to_f64_lossy());
+    // Top: satisfaction, production and accumulator charge.
+    p.spawn(Node { flex_direction: FlexDirection::Row, column_gap: Val::Px(12.0), ..default() }).with_children(|row| {
+        let sat = n.satisfaction().to_f64_lossy();
+        network_section(row, ctx, "Satisfaction", false, |c, ctx| {
+            value_bar(
+                c,
+                ctx,
+                sat,
+                looks().production_bar_color,
+                format!("{} / {}", watts(n.production), watts(n.demand)),
+                Some(Live::Satisfaction),
+            );
+        });
+        let cap = n.capacity.to_f64_lossy();
+        let prod = if cap > 0.0 { n.production.to_f64_lossy() / cap } else { 0.0 };
+        network_section(row, ctx, "Production", false, |c, ctx| {
+            value_bar(
+                c,
+                ctx,
+                prod,
+                looks().production_bar_color,
+                format!("{} / {}", watts(n.production), watts(n.capacity)),
+                None,
+            );
+        });
+        network_section(row, ctx, "Accumulator charge", false, |c, ctx| {
+            value_bar(c, ctx, 0.0, looks().production_bar_color, "0 W / 0 W".into(), None);
+        });
+    });
+    // Time ranges. Only the first three are recorded so far.
     let font = ctx.fonts.regular.clone();
     p.spawn(Node { flex_direction: FlexDirection::Row, column_gap: Val::Px(4.0), ..default() }).with_children(|row| {
-        for (i, name) in ["5s", "1m", "10m"].iter().enumerate() {
+        for (i, name) in ["5s", "1m", "10m", "1h", "10h", "50h", "250h", "1000h"].iter().enumerate() {
             let l = looks();
             let look = if chart.range == i { &l.yellow_slot } else { &l.button };
-            row.spawn((
-                UiButton::ChartRange(i),
-                Button,
-                Node { padding: UiRect::axes(Val::Px(8.0), Val::Px(2.0)), ..default() },
+            let mut b = row.spawn((
+                Node {
+                    flex_grow: 1.0,
+                    height: Val::Px(28.0),
+                    justify_content: JustifyContent::Center,
+                    align_items: AlignItems::Center,
+                    ..default()
+                },
                 crate::gui_skin::node_image(&look.default),
                 look.clone(),
-            ))
-            .with_children(|b| {
-                b.spawn((Text::new(*name), TextFont { font: font.clone(), font_size: 13.0, ..default() }));
+            ));
+            if i < 3 {
+                b.insert((UiButton::ChartRange(i), Button));
+            }
+            b.with_children(|b| {
+                b.spawn((
+                    Text::new(*name),
+                    TextFont { font: font.clone(), font_size: 14.0, ..default() },
+                    TextColor(Color::BLACK),
+                ));
             });
         }
     });
-    p.spawn((
-        ImageNode::new(chart.image.clone()),
-        Node { width: Val::Px(crate::chart::WIDTH as f32), height: Val::Px(crate::chart::HEIGHT as f32), ..default() },
-    ));
+    let Some(stats) = sim.0.power.stats_for(id) else { return };
+    crate::chart::draw(images, chart, stats);
     let last = stats.series[chart.range].samples.back().cloned().unwrap_or_default();
-    let swatch = |p: &mut ChildSpawnerCommands, c: [u8; 3], text: String| {
-        p.spawn(Node {
-            flex_direction: FlexDirection::Row,
-            column_gap: Val::Px(6.0),
-            align_items: AlignItems::Center,
+    // Entity counts per type in this network.
+    let mut counts: std::collections::BTreeMap<factorio_sim::proto::EntityProtoId, u32> = Default::default();
+    for e in n.consumers.iter().chain(&n.generators) {
+        if let Some(e) = sim.0.entity(*e) {
+            *counts.entry(e.proto).or_default() += 1;
+        }
+    }
+    let rows = |c: &mut ChildSpawnerCommands,
+                ctx: &mut Ctx,
+                entries: Vec<(factorio_sim::proto::EntityProtoId, f64, [u8; 3])>| {
+        c.spawn(Node {
+            display: Display::Grid,
+            grid_template_columns: RepeatedGridTrack::flex(2, 1.0),
+            column_gap: Val::Px(12.0),
+            padding: UiRect::all(Val::Px(12.0)),
+            min_height: Val::Px(200.0),
+            align_content: AlignContent::Start,
             ..default()
         })
-        .with_children(|r| {
-            r.spawn((
-                Node { width: Val::Px(10.0), height: Val::Px(10.0), ..default() },
-                BackgroundColor(Color::srgb_u8(c[0], c[1], c[2])),
-            ));
-            ctx.text(r, text, 13.0, TEXT);
+        .with_children(|g| {
+            for (proto, v, color) in entries {
+                g.spawn(Node {
+                    flex_direction: FlexDirection::Row,
+                    align_items: AlignItems::Center,
+                    column_gap: Val::Px(6.0),
+                    height: Val::Px(32.0),
+                    ..default()
+                })
+                .with_children(|r| {
+                    r.spawn((
+                        Node { width: Val::Px(4.0), height: Val::Px(24.0), ..default() },
+                        BackgroundColor(Color::srgb_u8(color[0], color[1], color[2])),
+                    ));
+                    let name = db.entity(proto).name.clone();
+                    let d = ctx.data.0.clone();
+                    if let Some(icon) = ctx.sprites.get(ctx.assets, ctx.data, &format!("eicon:{name}"), || {
+                        factorio_data::sprite::item_icon(&d, &name)
+                    }) {
+                        let s = &icon.sprite;
+                        r.spawn((
+                            ImageNode {
+                                image: icon.image.clone(),
+                                rect: Some(Rect::new(
+                                    s.x as f32,
+                                    s.y as f32,
+                                    (s.x + s.width) as f32,
+                                    (s.y + s.height) as f32,
+                                )),
+                                ..default()
+                            },
+                            Node { width: Val::Px(24.0), height: Val::Px(24.0), ..default() },
+                        ));
+                    }
+                    ctx.text(r, format!("x{}", counts.get(&proto).copied().unwrap_or(0)), 13.0, TEXT);
+                    r.spawn(Node { flex_grow: 1.0, ..default() });
+                    ctx.text(r, power_text(v), 13.0, Color::WHITE);
+                });
+            }
         });
     };
-    for (pid, prod) in &last.production {
-        swatch(p, PRODUCTION, format!("{} (production): {}", db.entity(*pid).name, power_text(prod.to_f64_lossy())));
-    }
-    for (k, proto) in crate::chart::series_order(stats, chart.range).iter().enumerate() {
-        let v = last.consumption.get(proto).map_or(0.0, |v| v.to_f64_lossy());
-        swatch(p, PALETTE[k], format!("{}: {}", db.entity(*proto).name, power_text(v)));
-    }
+    let graph = |c: &mut ChildSpawnerCommands, image: &Handle<Image>| {
+        c.spawn(Node { padding: UiRect::axes(Val::Px(18.0), Val::Px(0.0)), ..default() }).with_children(|g| {
+            g.spawn((
+                ImageNode::new(image.clone()),
+                Node {
+                    width: Val::Px(crate::chart::WIDTH as f32),
+                    height: Val::Px(crate::chart::HEIGHT as f32),
+                    ..default()
+                },
+            ));
+        });
+    };
+    p.spawn(Node { flex_direction: FlexDirection::Row, column_gap: Val::Px(12.0), ..default() }).with_children(|row| {
+        let consumers: Vec<_> = crate::chart::series_order(stats, chart.range)
+            .into_iter()
+            .enumerate()
+            .map(|(k, proto)| (proto, last.consumption.get(&proto).map_or(0.0, |v| v.to_f64_lossy()), PALETTE[k]))
+            .collect();
+        network_section(row, ctx, "Consumption", true, |c, ctx| {
+            graph(c, &chart.image);
+            rows(c, ctx, consumers);
+        });
+        let producers: Vec<_> = crate::chart::production_order(stats, chart.range)
+            .into_iter()
+            .enumerate()
+            .map(|(k, proto)| (proto, last.production.get(&proto).map_or(0.0, |v| v.to_f64_lossy()), PALETTE[k]))
+            .collect();
+        network_section(row, ctx, "Production", true, |c, ctx| {
+            graph(c, &chart.production);
+            rows(c, ctx, producers);
+        });
+        network_section(row, ctx, "Accumulator charge", false, |c, _| {
+            graph(c, &chart.accumulator);
+        });
+    });
 }
 
 // ----- tooltip, cursor icon, selection -----

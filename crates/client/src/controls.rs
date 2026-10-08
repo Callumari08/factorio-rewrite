@@ -100,6 +100,10 @@ fn open_from_env(mut commands: Commands, sim: Res<Sim>, mut ui: ResMut<UiState>,
             factorio_sim::world::EntityState::Pole => want == "power",
             factorio_sim::world::EntityState::Lab(_) => want == "lab",
             factorio_sim::world::EntityState::Container(_) => want == "chest",
+            factorio_sim::world::EntityState::Drill(_) => want == "drill",
+            factorio_sim::world::EntityState::Inserter(_) => want == "inserter",
+            factorio_sim::world::EntityState::Belt => want == "belt",
+            factorio_sim::world::EntityState::Fluid(_) => want == "fluid",
             factorio_sim::world::EntityState::Crafter(c) => {
                 if want == "furnace" {
                     c.furnace

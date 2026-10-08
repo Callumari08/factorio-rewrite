@@ -209,6 +209,7 @@ pub struct Looks {
     pub bar_color: Color,
     pub tooltip: Slice,
     pub button: ButtonLook,
+    pub red_button: ButtonLook,
     pub frame_button: ButtonLook,
     /// The striped draggable header filler, tiled.
     pub header_filler: Option<(Handle<Image>, Rect)>,
@@ -274,6 +275,7 @@ fn resolve(mut commands: Commands, skin: Res<Skin>, data: Res<Data>, assets: Res
         bar_color: skin.color("progressbar", "color").unwrap_or(Color::srgb(0.98, 0.66, 0.22)),
         tooltip: get("tooltip_frame", "graphical_set").unwrap_or_else(fallback),
         button: look(states("button")),
+        red_button: look(states("tool_button_red")),
         frame_button: look(states("frame_action_button")),
         header_filler,
         title_color: skin.color("frame_title", "font_color").unwrap_or(Color::srgb(1.0, 0.9, 0.75)),
