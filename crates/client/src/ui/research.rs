@@ -770,7 +770,20 @@ pub(super) fn hud(
     commands.entity(*root).with_children(|p| {
         let shown = r.current().or(finished.map(|(t, _)| t));
         let Some(t) = shown else {
-            ctx.text(p, "No research in progress (T)", 14.0, TEXT);
+            // As in the game: the flask and "Press T to start a new research."
+            p.spawn((Node { width: Val::Px(24.0), height: Val::Px(24.0), ..default() }, UiButton::OpenTech, Button))
+                .with_children(|b| ctx.utility(b, "side_menu_technology_icon", 24.0));
+            p.spawn((
+                Text::default(),
+                TextFont { font: ctx.fonts.bold.clone(), font_size: 14.0, ..default() },
+                TextColor(Color::WHITE),
+            ))
+            .with_children(|t| {
+                let font = TextFont { font: ctx.fonts.bold.clone(), font_size: 14.0, ..default() };
+                t.spawn((TextSpan::new("Press "), font.clone(), TextColor(Color::WHITE)));
+                t.spawn((TextSpan::new("T"), font.clone(), TextColor(Color::srgb_u8(128, 206, 240))));
+                t.spawn((TextSpan::new(" to start a new research."), font, TextColor(Color::WHITE)));
+            });
             return;
         };
         p.spawn((

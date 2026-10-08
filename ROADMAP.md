@@ -56,20 +56,22 @@ Each step ends with a playtest. Feedback from it becomes a ".5" step before the 
      [x] window frame with title bar, draggable filler and close button, [~] fonts and
      text styles, [ ] drag-spreading with the cursor stack, [x] hand slot, [ ] slot
      details (quality, filters, progress bars on slots), [ ] keyboard/mouse audit.
-   - Character window (E): [~] inventory panel, [ ] crafting panel (item-group tabs,
+   - Character window (E): [x] inventory panel, [x] crafting panel (item-group tabs,
      subgroup rows, empty cells as in the game), [ ] logistics, armor and gun slots,
      [ ] inventory toolbar (sort, trash).
    - Entity windows: [x] assembling machines, [x] furnaces, [~] chests (inventory-limit
-     button, deep frame), [ ] mining drills (burner, electric), [ ] inserters (burner,
-     normal, long), [ ] transport belt, underground belt, splitter, [ ] boiler, steam
-     engine, offshore pump, pipe (fluid boxes), [ ] electric poles (network info and
-     graphs), [ ] lab (science slots and research), [ ] radar, walls.
+     button, deep frame), [x] mining drills, [~] inserters (filters, stack size
+     override), [x] transport belt, [~] splitter (priorities, filter), [x] boiler,
+     offshore pump, pipe, [~] electric network info (long time ranges), [x] lab.
    - Hover info panel (the selected entity's details at the side): [ ] all entities.
    - Tooltips: [ ] item, [ ] recipe (ingredients, time, totals, hints), [ ] technology,
      [ ] entity.
-   - HUD: [ ] quickbar, [ ] crafting queue, [ ] research progress (top right),
-     [ ] minimap, [ ] shortcut bar, [ ] alerts.
-   - Technology: [ ] 2.0 tech tree view (graph, zoom, search, queue, tech slot styles).
+   - HUD: [x] quickbar, [x] crafting queue, [x] research progress (top right),
+     [~] minimap (no zoom, no player name), [x] shortcut bar (buttons do nothing yet),
+     [ ] alerts panel above the shortcut bar (red triangle with "!" while a building
+     takes damage, "x" once destroyed, yellow for other alerts, with counts; also
+     shown on the minimap) once combat exists.
+   - Technology: [~] 2.0 tech screen (queue, card, list, tree; no drag/zoom/search yet).
    - Menus: [ ] settings (sound and the rest of the options menu), [ ] map view (M).
 
 ## Next: the rest of step 3, in order

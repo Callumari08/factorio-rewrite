@@ -140,8 +140,8 @@ fn menu_button(p: &mut ChildSpawnerCommands, ctx: &mut Ctx, sprite: &str, tip: &
     e.with_children(|b| ctx.utility(b, sprite, 32.0));
 }
 
-/// The two rows of side menu buttons, as in the game; the technology button shows how
-/// many technologies are queued.
+/// The two rows of side menu buttons, as in the game (the technologies are opened from
+/// the research panel above them).
 pub(super) fn side_menu(
     mut commands: Commands,
     sim: Res<Sim>,
@@ -164,7 +164,7 @@ pub(super) fn side_menu(
     commands.entity(*root).with_children(|m| {
         m.spawn(Node { flex_direction: FlexDirection::Row, ..default() }).with_children(|row| {
             for (sprite, tip) in [
-                ("side_menu_map_icon", "Map (M)"),
+                ("side_menu_blueprint_library_icon", "Blueprint library (B)"),
                 ("side_menu_production_icon", "Production statistics (P)"),
                 ("side_menu_bonus_icon", "Bonuses"),
                 ("side_menu_factoriopedia_icon", "Factoriopedia (Alt+F)"),
@@ -175,37 +175,7 @@ pub(super) fn side_menu(
             }
         });
         m.spawn(Node { flex_direction: FlexDirection::Row, ..default() }).with_children(|row| {
-            row.spawn((
-                Node {
-                    width: Val::Px(SLOT_PX),
-                    height: Val::Px(SLOT_PX),
-                    justify_content: JustifyContent::Center,
-                    align_items: AlignItems::Center,
-                    ..default()
-                },
-                crate::gui_skin::node_image(&looks().side_menu_button.default),
-                looks().side_menu_button.clone(),
-                UiButton::OpenTech,
-                Button,
-                Tip::Text("Technologies (T)".into()),
-            ))
-            .with_children(|b| {
-                ctx.utility(b, "side_menu_technology_icon", 32.0);
-                if !r.queue.is_empty() {
-                    b.spawn((
-                        Text::new(r.queue.len().to_string()),
-                        TextFont { font: ctx.fonts.bold.clone(), font_size: 13.0, ..default() },
-                        TextColor(Color::WHITE),
-                        TextShadow { offset: Vec2::new(1.0, 1.0), color: Color::BLACK },
-                        Node {
-                            position_type: PositionType::Absolute,
-                            right: Val::Px(3.0),
-                            bottom: Val::Px(0.0),
-                            ..default()
-                        },
-                    ));
-                }
-            });
+            menu_button(row, &mut ctx, "side_menu_tutorials_icon", "Tips and tricks", true);
             menu_button(row, &mut ctx, "side_menu_logistic_networks_icon", "Logistic networks (L)", false);
             for _ in 0..4 {
                 empty_cell(row);
