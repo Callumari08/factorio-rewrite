@@ -93,6 +93,16 @@ fn main() -> AppExit {
             start.push(PlayerInput::new(LOCAL_PLAYER, InputAction::CheatItems { item, count }));
         }
     }
+    // `FACTORIO_REWRITE_TELEPORT=x,y` starts the character elsewhere, for screenshots.
+    if let Some((x, y)) = std::env::var("FACTORIO_REWRITE_TELEPORT").ok().and_then(|v| {
+        let (x, y) = v.split_once(',')?;
+        Some((x.trim().parse::<i32>().ok()?, y.trim().parse::<i32>().ok()?))
+    }) {
+        start.push(PlayerInput::new(
+            LOCAL_PLAYER,
+            InputAction::CheatTeleport(factorio_sim::map::MapPosition::new(x * 256, y * 256)),
+        ));
+    }
     sim.step(&start);
     if std::env::var_os("FACTORIO_REWRITE_DEMO").is_some() {
         demo::build(&mut sim);

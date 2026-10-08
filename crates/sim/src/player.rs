@@ -307,6 +307,12 @@ pub(crate) fn apply_input(sim: &mut Simulation, player: u16, action: &InputActio
             }
         }
         InputAction::CheatItems { item, count } => give(sim, player, item, count),
+        InputAction::CheatTeleport(to) => {
+            let c = character_mut(sim, player);
+            c.x = Fixed::from_ratio(to.x as i64, SUBTILES_PER_TILE as i64);
+            c.y = Fixed::from_ratio(to.y as i64, SUBTILES_PER_TILE as i64);
+            c.mining = None;
+        }
         InputAction::JoinGame
         | InputAction::CheatPlaceEntity { .. }
         | InputAction::CheatInsert { .. }

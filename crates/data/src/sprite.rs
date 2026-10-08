@@ -373,10 +373,9 @@ pub fn scenery_layers(data: &GameData, name: &str, variation: usize) -> Vec<(Spr
             add(v.get("trunk"), None, &mut out);
             add(v.get("leaves"), tint, &mut out);
         }
-        if out.is_empty() {
-            add(proto.get("pictures"), None, &mut out);
-        }
-    } else {
+    }
+    // Rocks and dead trees: one of `pictures`.
+    if out.is_empty() {
         let pictures = proto.get("pictures");
         let list = pictures.as_array();
         if list.is_empty() {

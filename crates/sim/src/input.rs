@@ -80,6 +80,8 @@ pub enum InputAction {
     DequeueResearch(TechId),
     /// Researches every technology (Factorio's `/cheat all`).
     CheatResearchAll,
+    /// Sandbox/testing: moves the character (Factorio's `/c player.teleport`).
+    CheatTeleport(MapPosition),
     /// Sandbox/testing: adds items to the character's inventory.
     CheatItems { item: ItemId, count: u32 },
     /// Sandbox/testing: places an entity without needing the item or reach.

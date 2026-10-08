@@ -253,11 +253,8 @@ pub fn noise_mapgen(data: &GameData, db: &PrototypeDb, planet: &str, seed: u64) 
                 .iter()
                 .filter_map(|v| v.as_f64())
                 .fold(0.0f64, |m, v| m.max(v.abs()));
-            let variations = match kind {
-                "tree" => raw.get("variations").as_array().len(),
-                _ => raw.get("pictures").as_array().len(),
-            }
-            .clamp(1, 255) as u8;
+            let variations =
+                raw.get("variations").as_array().len().max(raw.get("pictures").as_array().len()).clamp(1, 255) as u8;
             scenery.push((
                 order + &name,
                 EntityAutoplace {
