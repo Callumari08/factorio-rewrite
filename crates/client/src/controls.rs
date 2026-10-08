@@ -80,6 +80,15 @@ fn open_from_env(mut commands: Commands, sim: Res<Sim>, mut ui: ResMut<UiState>,
         return;
     }
     ui.inventory_open = true;
+    // `FACTORIO_REWRITE_UI=hand` picks up the first inventory stack (showing the hand).
+    if std::env::var("FACTORIO_REWRITE_UI").is_ok_and(|v| v == "hand") {
+        pending.push(InputAction::ClickSlot {
+            slot: factorio_sim::input::SlotRef::Character(0),
+            button: factorio_sim::input::MouseButton::Left,
+            shift: false,
+            ctrl: false,
+        });
+    }
     // `FACTORIO_REWRITE_UI=power` opens a pole (the network window) instead of a machine,
     // `lab` a lab, `chest` a container, `furnace` a furnace. The character is moved next to
     // it so it is in reach.

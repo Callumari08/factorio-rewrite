@@ -734,6 +734,46 @@ mod cursor {
         assert_eq!(inventory_count(&sim, "iron-plate"), 150);
     }
 
+    fn hand(sim: &Simulation) -> Option<usize> {
+        sim.player(0).unwrap().character.as_ref().unwrap().inventory.reserved()
+    }
+
+    #[test]
+    fn picked_up_stack_leaves_the_hand_and_q_returns_it_there() {
+        let d = game!();
+        let mut sim = flat_world(d);
+        give(&mut sim, "iron-plate", 100);
+        give(&mut sim, "copper-plate", 10);
+        let s = slot_of(&sim, "iron-plate");
+        click(&mut sim, SlotRef::Character(s), MouseButton::Left, false, false);
+        assert_eq!(hand(&sim), Some(s as usize));
+        // New items and the inventory's sorting leave the hand's slot empty.
+        give(&mut sim, "coal", 5);
+        let inv = &sim.player(0).unwrap().character.as_ref().unwrap().inventory;
+        assert!(inv.slot(s as usize).is_none());
+        assert_eq!(hand(&sim), Some(s as usize));
+        // Q puts the stack back.
+        input(&mut sim, InputAction::ClearCursor);
+        assert_eq!(inventory_count(&sim, "iron-plate"), 100);
+        assert_eq!(hand(&sim), None);
+    }
+
+    #[test]
+    fn placing_the_stack_elsewhere_drops_the_hand() {
+        let d = game!();
+        let mut sim = flat_world(d);
+        give(&mut sim, "iron-plate", 100);
+        let s = slot_of(&sim, "iron-plate");
+        click(&mut sim, SlotRef::Character(s), MouseButton::Left, false, false);
+        click(&mut sim, SlotRef::Character(s + 5), MouseButton::Left, false, false);
+        assert_eq!(hand(&sim), None);
+        assert_eq!(cursor(&sim), None);
+        let s = slot_of(&sim, "iron-plate");
+        // Taking half a stack leaves items in the slot: no hand.
+        click(&mut sim, SlotRef::Character(s), MouseButton::Right, false, false);
+        assert_eq!(hand(&sim), None);
+    }
+
     #[test]
     fn right_click_takes_half_and_places_one() {
         let d = game!();

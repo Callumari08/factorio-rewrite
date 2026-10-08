@@ -37,6 +37,7 @@ impl Plugin for UiPlugin {
                     quickbar,
                     queue,
                     window,
+                    live_bars,
                     research::scroll,
                     research::window,
                     research::hud,
@@ -515,6 +516,9 @@ struct Ctx<'a> {
     fonts: &'a Fonts,
     db: &'a PrototypeDb,
     research: &'a Research,
+    /// The button hovered before a rebuild (its `Debug` text): its replacement starts
+    /// hovered, so a rebuild never blinks the highlight or the tooltip.
+    hovered: Option<String>,
 }
 
 impl Ctx<'_> {
@@ -590,6 +594,21 @@ impl Ctx<'_> {
         button: Option<UiButton>,
         tip: Option<Tip>,
     ) {
+        self.slot_ext(p, item, count, bg, button, tip, false);
+    }
+
+    /// [`Ctx::slot`], optionally showing the hand (where the cursor's stack came from).
+    #[allow(clippy::too_many_arguments)]
+    fn slot_ext(
+        &mut self,
+        p: &mut ChildSpawnerCommands,
+        item: Option<ItemId>,
+        count: Option<u32>,
+        bg: Color,
+        button: Option<UiButton>,
+        tip: Option<Tip>,
+        hand: bool,
+    ) {
         // The game's slot styles: inventory, plain, red (missing) and yellow (selected).
         let look = if bg == SLOT_RED {
             &looks().red_slot
@@ -612,6 +631,9 @@ impl Ctx<'_> {
             look.clone(),
         ));
         if let Some(b) = button {
+            if self.hovered.as_deref() == Some(format!("{b:?}").as_str()) {
+                e.insert((Interaction::Hovered, crate::gui_skin::node_image(&look.hovered)));
+            }
             e.insert((b, Button));
         } else {
             e.insert(Interaction::default());
@@ -623,6 +645,8 @@ impl Ctx<'_> {
         e.with_children(|c| {
             if let Some(i) = item {
                 self.icon(c, i, 32.0);
+            } else if hand {
+                self.utility(c, "hand", 32.0);
             }
             if let Some(n) = count.filter(|n| *n > 1) {
                 // The game's `count-font`: bold 13 with a dark outline.
@@ -651,7 +675,8 @@ impl Ctx<'_> {
     ) {
         grid(p, columns, |g| {
             for (i, s) in inv.slots().iter().enumerate() {
-                self.slot(g, s.map(|s| s.item), s.map(|s| s.count), INV, Some(UiButton::Slot(make(i))), None);
+                let hand = s.is_none() && inv.reserved() == Some(i);
+                self.slot_ext(g, s.map(|s| s.item), s.map(|s| s.count), INV, Some(UiButton::Slot(make(i))), None, hand);
             }
         });
     }
@@ -795,7 +820,7 @@ fn entity_preview(p: &mut ChildSpawnerCommands, ctx: &mut Ctx, sim: &Sim, id: En
 }
 
 /// The game's `production_progressbar`: a 24 px bar with the percentage inside it.
-fn production_bar(p: &mut ChildSpawnerCommands, ctx: &Ctx, fraction: f64) {
+fn production_bar(p: &mut ChildSpawnerCommands, ctx: &Ctx, fraction: f64, live: Live) {
     let l = looks();
     p.spawn((
         Node {
@@ -821,11 +846,13 @@ fn production_bar(p: &mut ChildSpawnerCommands, ctx: &Ctx, fraction: f64) {
                 ..default()
             },
             bar,
+            LiveFill(live),
         ));
         b.spawn((
             Text::new(format!("{:.0}%", fraction * 100.0)),
             TextFont { font: ctx.fonts.regular.clone(), font_size: 14.0, ..default() },
             TextColor(if fraction > 0.9 { Color::BLACK } else { Color::WHITE }),
+            LiveText(live),
         ));
     });
 }
@@ -864,6 +891,11 @@ fn panel(p: &mut ChildSpawnerCommands, width: f32, f: impl FnOnce(&mut ChildSpaw
 
 /// The game's `progressbar` style: a sliced background and a bar tinted `color`.
 fn progress_bar(p: &mut ChildSpawnerCommands, fraction: f64, color: Color) {
+    progress_bar_live(p, fraction, color, None);
+}
+
+/// [`progress_bar`] whose fill follows a [`Live`] value.
+fn progress_bar_live(p: &mut ChildSpawnerCommands, fraction: f64, color: Color, live: Option<Live>) {
     let l = looks();
     p.spawn((
         Node { width: Val::Percent(100.0), height: Val::Px(8.0), ..default() },
@@ -872,7 +904,7 @@ fn progress_bar(p: &mut ChildSpawnerCommands, fraction: f64, color: Color) {
     .with_children(|b| {
         let mut bar = crate::gui_skin::node_image(&l.bar);
         bar.color = color;
-        b.spawn((
+        let mut fill = b.spawn((
             Node {
                 width: Val::Percent((fraction.clamp(0.0, 1.0) * 100.0) as f32),
                 height: Val::Percent(100.0),
@@ -880,6 +912,9 @@ fn progress_bar(p: &mut ChildSpawnerCommands, fraction: f64, color: Color) {
             },
             bar,
         ));
+        if let Some(live) = live {
+            fill.insert(LiveFill(live));
+        }
     });
 }
 
@@ -894,6 +929,7 @@ fn quickbar(
     mut sprites: ResMut<Sprites>,
     root: Single<Entity, With<QuickbarRoot>>,
     mut last: Local<String>,
+    buttons: Query<(&Interaction, &UiButton)>,
 ) {
     let Some(p) = sim.0.player(LOCAL_PLAYER) else { return };
     let Some(c) = p.character.as_ref() else { return };
@@ -908,8 +944,15 @@ fn quickbar(
     }
     *last = sig;
     let db = sim.0.prototypes();
-    let mut ctx =
-        Ctx { sprites: &mut sprites, assets: &assets, data: &data, fonts: &fonts, db, research: sim.0.research() };
+    let mut ctx = Ctx {
+        sprites: &mut sprites,
+        assets: &assets,
+        data: &data,
+        fonts: &fonts,
+        db,
+        research: sim.0.research(),
+        hovered: hovered_button(&buttons),
+    };
     commands.entity(*root).despawn_related::<Children>();
     commands.entity(*root).with_children(|r| {
         for row in 0..QUICKBAR_SLOTS / 10 {
@@ -927,6 +970,11 @@ fn quickbar(
             });
         }
     });
+}
+
+/// The hovered button's `Debug` text (see [`Ctx::hovered`]).
+fn hovered_button(q: &Query<(&Interaction, &UiButton)>) -> Option<String> {
+    q.iter().find(|(i, _)| **i != Interaction::None).map(|(_, b)| format!("{b:?}"))
 }
 
 fn hover_highlight(mut q: Query<(&Interaction, &Base, &mut BackgroundColor), Changed<Interaction>>) {
@@ -953,8 +1001,15 @@ fn queue(
     }
     *last = sig;
     let db = sim.0.prototypes();
-    let mut ctx =
-        Ctx { sprites: &mut sprites, assets: &assets, data: &data, fonts: &fonts, db, research: sim.0.research() };
+    let mut ctx = Ctx {
+        sprites: &mut sprites,
+        assets: &assets,
+        data: &data,
+        fonts: &fonts,
+        db,
+        research: sim.0.research(),
+        hovered: None,
+    };
     commands.entity(*root).despawn_related::<Children>();
     commands.entity(*root).with_children(|p| {
         for (i, job) in c.queue.iter().enumerate() {
@@ -991,6 +1046,7 @@ fn window(
     mut root: Single<(Entity, &mut Node), With<WindowRoot>>,
     mut last: Local<String>,
     mut checker: Local<Option<Handle<Image>>>,
+    buttons: Query<(&Interaction, &UiButton)>,
 ) {
     let opened = opened(&sim);
     let show = ui.inventory_open || opened.is_some();
@@ -1002,10 +1058,12 @@ fn window(
     }
     let db = sim.0.prototypes();
     let cheat = sim.0.player(LOCAL_PLAYER).is_some_and(|p| p.cheat_mode);
-    let entity_sig = opened.and_then(|id| sim.0.entity(id)).map(|e| format!("{:?}", e.state)).unwrap_or_default();
+    // Rebuilt only when what the window shows changes structurally; progress bars update
+    // in place (`live_bars`), so hovered slots keep their highlight and tooltip.
+    let entity_sig = opened.map(|id| structure_sig(&sim, id)).unwrap_or_default();
     let belt = opened.and_then(|id| sim.0.belts.get(id)).map(|b| b.item_count());
     let sig = format!(
-        "{:?}|{:?}|{}|{}|{}|{:?}|{}|{}|{cheat}|{}",
+        "{:?}|{:?}|{}|{}|{}|{:?}|{}|{cheat}|{}",
         c.inventory,
         opened,
         entity_sig,
@@ -1013,8 +1071,6 @@ fn window(
         local.choosing_recipe,
         belt,
         chart.range,
-        // Progress bars and graphs refresh a few times a second.
-        if opened.is_some() { sim.0.tick() / 10 } else { 0 },
         sim.0.research().recipes.iter().filter(|e| **e).count()
     );
     if *last == sig {
@@ -1022,8 +1078,15 @@ fn window(
     }
     *last = sig;
     let root = root.0;
-    let mut ctx =
-        Ctx { sprites: &mut sprites, assets: &assets, data: &data, fonts: &fonts, db, research: sim.0.research() };
+    let mut ctx = Ctx {
+        sprites: &mut sprites,
+        assets: &assets,
+        data: &data,
+        fonts: &fonts,
+        db,
+        research: sim.0.research(),
+        hovered: hovered_button(&buttons),
+    };
     commands.entity(root).despawn_related::<Children>();
     let checker = checker.get_or_insert_with(|| images.add(preview_background())).clone();
     let title = opened
@@ -1129,6 +1192,122 @@ fn crafting_panel(p: &mut ChildSpawnerCommands, ctx: &mut Ctx, names: &Names, c:
                 ctx.slot(g, main, (can > 0).then_some(can), bg, Some(UiButton::Craft(r)), Some(Tip::Recipe(r)));
             }
         });
+    }
+}
+
+/// What an entity window shows apart from its progress bars.
+fn structure_sig(sim: &Sim, id: EntityId) -> String {
+    let Some(e) = sim.0.entity(id) else { return String::new() };
+    let burner = |energy: &factorio_sim::energy::EnergyState| {
+        energy.burner().map(|b| format!("{:?}{:?}{:?}", b.fuel, b.burnt, b.currently_burning.is_some()))
+    };
+    let state = match &e.state {
+        EntityState::Container(inv) => format!("{inv:?}"),
+        EntityState::Drill(d) => format!("{:?}{:?}", burner(&d.energy), d.output),
+        EntityState::Crafter(c) => format!("{:?}{:?}{:?}{:?}", c.recipe, c.input, c.output, burner(&c.energy)),
+        EntityState::Inserter(i) => format!("{:?}{:?}", i.hand.map(|h| h.item), burner(&i.energy)),
+        EntityState::Lab(l) => format!("{:?}{:?}", l.input, sim.0.research().current()),
+        // Fluid amounts, power figures and graphs: refreshed once a second.
+        EntityState::Fluid(f) => format!("{:?}{}", burner(&f.energy), sim.0.tick() / 60),
+        EntityState::Pole => format!("{}", sim.0.tick() / 60),
+        other => format!("{other:?}"),
+    };
+    format!("{}|{state}", status(sim, id).0)
+}
+
+/// A value shown by a bar that updates every frame without rebuilding the window.
+#[derive(Component, Clone, Copy, Debug)]
+enum Live {
+    /// The opened machine's crafting progress.
+    Craft,
+    /// Fuel left in the item the opened entity is burning.
+    FuelLeft,
+    /// The opened drill's mining progress.
+    Drill,
+    /// The current research.
+    Research,
+    /// Durability left in the opened lab's pack in this slot.
+    LabPack(u16),
+    /// The opened pole's network satisfaction.
+    Satisfaction,
+}
+
+/// The fill of a bar showing a [`Live`] value.
+#[derive(Component)]
+struct LiveFill(Live);
+
+/// The percentage text of a bar showing a [`Live`] value.
+#[derive(Component)]
+struct LiveText(Live);
+
+fn live_value(sim: &Sim, live: Live) -> f64 {
+    let db = sim.0.prototypes();
+    let r = sim.0.research();
+    if let Live::Research = live {
+        return r.current().map_or(0.0, |t| r.progress_fraction(db, t).to_f64_lossy());
+    }
+    let Some(e) = opened(sim).and_then(|id| sim.0.entity(id)) else { return 0.0 };
+    let proto = db.entity(e.proto);
+    let fuel_left = |energy: &factorio_sim::energy::EnergyState| {
+        energy
+            .burner()
+            .and_then(|b| {
+                let f = db.item(b.currently_burning?).fuel.as_ref()?;
+                Some(b.remaining.to_f64_lossy() / f.value.to_f64_lossy().max(1e-9))
+            })
+            .unwrap_or(0.0)
+    };
+    let v = match (live, &e.state) {
+        (Live::Craft, EntityState::Crafter(c)) => {
+            let ticks = c.recipe.map(|r| db.recipe(r).ticks().to_f64_lossy()).unwrap_or(1.0);
+            c.progress.to_f64_lossy() / ticks
+        }
+        (Live::Drill, EntityState::Drill(d)) => {
+            let ticks = factorio_sim::machines::drill_resources(&sim.0, proto, e.position, e.direction)
+                .first()
+                .and_then(|t| sim.0.surface.resource(*t))
+                .and_then(|r| db.entity(r.proto).minable.as_ref())
+                .map(|m| m.mining_ticks.to_f64_lossy())
+                .unwrap_or(1.0);
+            d.progress.to_f64_lossy() / ticks
+        }
+        (Live::FuelLeft, EntityState::Crafter(c)) => fuel_left(&c.energy),
+        (Live::FuelLeft, EntityState::Drill(d)) => fuel_left(&d.energy),
+        (Live::FuelLeft, EntityState::Inserter(i)) => fuel_left(&i.energy),
+        (Live::FuelLeft, EntityState::Fluid(f)) => fuel_left(&f.energy),
+        (Live::FuelLeft, EntityState::Lab(l)) => fuel_left(&l.energy),
+        (Live::LabPack(i), EntityState::Lab(l)) => l.opened_fraction(i as usize).to_f64_lossy(),
+        (Live::Satisfaction, EntityState::Pole) => sim
+            .0
+            .power
+            .electric_network_of
+            .get(&opened(sim).unwrap())
+            .map_or(0.0, |n| sim.0.power.electric_networks[*n].satisfaction().to_f64_lossy()),
+        _ => 0.0,
+    };
+    v.clamp(0.0, 1.0)
+}
+
+/// Updates the [`Live`] bars every frame.
+fn live_bars(
+    sim: Res<Sim>,
+    mut fills: Query<(&LiveFill, &mut Node)>,
+    mut texts: Query<(&LiveText, &mut Text, &mut TextColor)>,
+) {
+    for (f, mut node) in &mut fills {
+        let w = Val::Percent((live_value(&sim, f.0) * 100.0) as f32);
+        if node.width != w {
+            node.width = w;
+        }
+    }
+    for (t, mut text, mut color) in &mut texts {
+        let v = live_value(&sim, t.0);
+        let s = format!("{:.0}%", v * 100.0);
+        if text.0 != s {
+            text.0 = s;
+            // The percentage turns dark once the bar is filled under it.
+            color.0 = if v > 0.9 { Color::BLACK } else { Color::WHITE };
+        }
     }
 }
 
@@ -1273,7 +1452,7 @@ fn entity_panel(
                     ctx.inventory(r, &b.burnt, n, |i| SlotRef::Opened(EntityInventory::BurntResult, i as u16));
                 }
                 r.spawn(Node { flex_grow: 1.0, flex_direction: FlexDirection::Column, ..default() })
-                    .with_children(|c| progress_bar(c, left, looks().burning_bar_color));
+                    .with_children(|c| progress_bar_live(c, left, looks().burning_bar_color, Some(Live::FuelLeft)));
             });
         }
     };
@@ -1286,7 +1465,7 @@ fn entity_panel(
                 .and_then(|r| db.entity(r.proto).minable.as_ref())
                 .map(|m| m.mining_ticks.to_f64_lossy())
                 .unwrap_or(1.0);
-            progress_bar(p, d.progress.to_f64_lossy() / ticks, PROGRESS);
+            progress_bar_live(p, d.progress.to_f64_lossy() / ticks, PROGRESS, Some(Live::Drill));
             fuel_slots(p, ctx, &d.energy);
         }
         EntityState::Crafter(c) => {
@@ -1351,7 +1530,7 @@ fn entity_panel(
             .with_children(|r| {
                 let n = c.input.slots().len().max(1);
                 ctx.inventory(r, &c.input, n, |i| SlotRef::Opened(EntityInventory::Input, i as u16));
-                production_bar(r, ctx, fraction);
+                production_bar(r, ctx, fraction, Live::Craft);
                 let n = c.output.slots().len().max(1);
                 ctx.inventory(r, &c.output, n, |i| SlotRef::Opened(EntityInventory::Output, i as u16));
             });
@@ -1482,7 +1661,7 @@ fn network_window(
         14.0,
         TEXT,
     );
-    progress_bar(p, n.satisfaction().to_f64_lossy(), PROGRESS);
+    progress_bar_live(p, n.satisfaction().to_f64_lossy(), PROGRESS, Some(Live::Satisfaction));
     let Some(stats) = sim.0.power.stats_for(id) else { return };
     crate::chart::draw(images, chart, stats);
     let font = ctx.fonts.regular.clone();
@@ -1545,13 +1724,20 @@ fn tooltip(
     mut sprites: ResMut<Sprites>,
     mut root: Single<(Entity, &mut Node), With<TooltipRoot>>,
     mut last: Local<String>,
+    mut misses: Local<u8>,
 ) {
     let tip = hovered.iter().find(|(i, _)| **i != Interaction::None).map(|(_, t)| t.clone());
     let Some(tip) = tip else {
-        root.1.display = Display::None;
-        last.clear();
+        // A rebuilt window's buttons only learn they are hovered a frame later; keep the
+        // tooltip through that frame instead of blinking it.
+        *misses = misses.saturating_add(1);
+        if *misses > 2 {
+            root.1.display = Display::None;
+            last.clear();
+        }
         return;
     };
+    *misses = 0;
     if let Some(c) = window.cursor_position() {
         root.1.display = Display::Flex;
         root.1.left = Val::Px(c.x + 18.0);
@@ -1563,8 +1749,15 @@ fn tooltip(
     }
     *last = sig;
     let db = sim.0.prototypes();
-    let mut ctx =
-        Ctx { sprites: &mut sprites, assets: &assets, data: &data, fonts: &fonts, db, research: sim.0.research() };
+    let mut ctx = Ctx {
+        sprites: &mut sprites,
+        assets: &assets,
+        data: &data,
+        fonts: &fonts,
+        db,
+        research: sim.0.research(),
+        hovered: None,
+    };
     let root = root.0;
     commands.entity(root).despawn_related::<Children>();
     commands.entity(root).with_children(|p| match tip {

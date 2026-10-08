@@ -239,7 +239,8 @@ pub(super) fn window(
         return;
     }
     *last = sig;
-    let mut ctx = Ctx { sprites: &mut sprites, assets: &assets, data: &data, fonts: &fonts, db, research: r };
+    let mut ctx =
+        Ctx { sprites: &mut sprites, assets: &assets, data: &data, fonts: &fonts, db, research: r, hovered: None };
     let selected = tech.selected.filter(|t| visible(db, *t));
 
     // Available first, then locked by depth, then researched.
@@ -386,7 +387,7 @@ fn details(p: &mut ChildSpawnerCommands, ctx: &mut Ctx, names: &Names, t: TechId
             ctx.text(row, format!("× {count}   {} s each", unit.time_ticks as f64 / 60.0), 15.0, TEXT);
         });
         if !r.is_researched(t) && r.progress[t.index()] > 0 {
-            progress_bar(p, r.progress_fraction(db, t).to_f64_lossy(), PROGRESS);
+            progress_bar_live(p, r.progress_fraction(db, t).to_f64_lossy(), PROGRESS, Some(Live::Research));
         }
     }
     if let Some(trigger) = &tech.trigger {
@@ -510,7 +511,8 @@ pub(super) fn hud(
         return;
     }
     *last = sig;
-    let mut ctx = Ctx { sprites: &mut sprites, assets: &assets, data: &data, fonts: &fonts, db, research: r };
+    let mut ctx =
+        Ctx { sprites: &mut sprites, assets: &assets, data: &data, fonts: &fonts, db, research: r, hovered: None };
     commands.entity(*root).despawn_related::<Children>();
     commands.entity(*root).with_children(|p| {
         let shown = r.current().or(finished.map(|(t, _)| t));
@@ -563,7 +565,7 @@ pub(super) fn lab_panel(
                 ctx.tech_icon(row, t, 40.0);
                 ctx.text(row, format!("Researching {}", names.tech(r, t)), 15.0, TEXT);
             });
-            progress_bar(p, r.progress_fraction(db, t).to_f64_lossy(), PROGRESS);
+            progress_bar_live(p, r.progress_fraction(db, t).to_f64_lossy(), PROGRESS, Some(Live::Research));
         }
         None => ctx.text(p, "No research in progress. Press T to choose one.", 14.0, TEXT),
     }
@@ -581,7 +583,12 @@ pub(super) fn lab_panel(
                     inputs.get(i).map(|p| Tip::Item(*p)),
                 );
                 // Durability left in the opened pack.
-                progress_bar(c, lab.opened_fraction(i).to_f64_lossy(), Color::srgb(0.3, 0.55, 0.85));
+                progress_bar_live(
+                    c,
+                    lab.opened_fraction(i).to_f64_lossy(),
+                    Color::srgb(0.3, 0.55, 0.85),
+                    Some(Live::LabPack(i as u16)),
+                );
             });
         }
     });

@@ -333,6 +333,7 @@ impl Simulation {
             return;
         }
         crate::player::apply_input(self, player, &input.action);
+        crate::cursor::sync_hand(self, player);
     }
 
     fn join(&mut self, player: u16) {

@@ -136,7 +136,14 @@ pub(crate) fn click_slot(
         _ => return,
     };
     match slot {
-        SlotRef::Character(i) => character_inventory(sim, player).unwrap().set_slot(i as usize, new_slot),
+        SlotRef::Character(i) => {
+            let inv = character_inventory(sim, player).unwrap();
+            inv.set_slot(i as usize, new_slot);
+            // Picking up a whole stack leaves the hand in its slot, kept free for it.
+            if cur.is_none() && new_slot.is_none() && new_cursor.is_some() {
+                inv.set_reserved(Some(i as usize));
+            }
+        }
         SlotRef::Opened(which, i) => {
             let id = opened.unwrap();
             let e = sim.entities.get_mut(&id).unwrap();
@@ -178,7 +185,14 @@ pub(crate) fn clear_cursor(sim: &mut Simulation, player: u16) {
     let db = sim.db.clone();
     let Some(c) = sim.players.get_mut(&player).and_then(|p| p.character.as_mut()) else { return };
     let Some(stack) = c.cursor.take() else { return };
-    let n = c.inventory.insert(&db, stack.item, stack.count);
+    // Back to the hand's slot first, as in the game.
+    let mut n = 0;
+    if let Some(r) = c.inventory.reserved().filter(|r| c.inventory.slot(*r).is_none()) {
+        n = stack.count.min(db.item(stack.item).stack_size);
+        c.inventory.set_slot(r, Some(ItemStack::new(stack.item, n)));
+    }
+    c.inventory.set_reserved(None);
+    let n = n + c.inventory.insert(&db, stack.item, stack.count - n);
     let at = c.position();
     if n < stack.count {
         sim.spill(at, ItemStack::new(stack.item, stack.count - n));
@@ -199,9 +213,13 @@ pub(crate) fn pick_item(sim: &mut Simulation, player: u16, item: ItemId) {
     }
     clear_cursor(sim, player);
     let Some(c) = sim.players.get_mut(&player).and_then(|p| p.character.as_mut()) else { return };
+    let before: Vec<bool> = c.inventory.slots().iter().map(Option::is_some).collect();
     let n = c.inventory.remove(item, db.item(item).stack_size);
     if n > 0 {
         c.cursor = Some(ItemStack::new(item, n));
+        // The hand goes where the stack was taken from.
+        let emptied = before.iter().enumerate().find(|(i, had)| **had && c.inventory.slot(*i).is_none());
+        c.inventory.set_reserved(emptied.map(|(i, _)| i));
     }
 }
 
@@ -265,4 +283,14 @@ pub fn has_window(db: &PrototypeDb, sim: &Simulation, id: EntityId) -> bool {
             EntityData::TransportBelt { .. } | EntityData::Pipe { .. } | EntityData::Other
         )
     })
+}
+
+/// Drops the hand once the cursor is empty or its slot has been filled.
+pub(crate) fn sync_hand(sim: &mut Simulation, player: u16) {
+    let Some(c) = sim.players.get_mut(&player).and_then(|p| p.character.as_mut()) else { return };
+    if let Some(r) = c.inventory.reserved()
+        && (c.cursor.is_none() || c.inventory.slot(r).is_some())
+    {
+        c.inventory.set_reserved(None);
+    }
 }
