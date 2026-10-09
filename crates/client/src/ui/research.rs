@@ -322,17 +322,23 @@ impl Ctx<'_> {
                 ..default()
             })
             .with_children(|pic| self.tech_icon(pic, t, (h - band) * 0.92));
-            // The band: darker, with the science packs.
+            // Above the band, a thin strip a shade darker than the picture (where the
+            // level badge sits); then the band itself, darker, with the science packs.
+            c.spawn((
+                Node { width: Val::Percent(100.0), height: Val::Px(band * 0.3), ..default() },
+                BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.18)),
+                Pickable::IGNORE,
+            ));
             c.spawn((
                 Node {
                     width: Val::Percent(100.0),
-                    height: Val::Px(band),
+                    height: Val::Px(band * 0.7),
                     flex_direction: FlexDirection::Row,
                     align_items: AlignItems::FlexEnd,
                     padding: UiRect { left: Val::Px(4.0), bottom: Val::Px(2.0), ..default() },
                     ..default()
                 },
-                BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.35)),
+                BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.5)),
                 Pickable::IGNORE,
             ))
             .with_children(|b| {

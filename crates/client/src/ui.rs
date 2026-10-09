@@ -484,13 +484,15 @@ fn clicks(
         }
         // Holding a stack, a left press on a free (or same-item) slot starts a drag-spread
         // (see `drag_spread`); everything else is an ordinary click.
-        (UiButton::Slot(slot), SimButton::Left)
+        // The character's own inventory sorts itself, so dragging only spreads into the
+        // opened entity's slots.
+        (UiButton::Slot(slot @ SlotRef::Opened(..)), SimButton::Left)
             if !shift && !ctrl && held.is_some() && slot_takes(&sim, slot, held.unwrap()) =>
         {
             local.drag = vec![slot];
             pending.push(InputAction::SpreadCursor { slots: vec![slot] });
         }
-        (UiButton::Slot(slot), SimButton::Right) if !shift && !ctrl && held.is_some() => {
+        (UiButton::Slot(slot @ SlotRef::Opened(..)), SimButton::Right) if !shift && !ctrl && held.is_some() => {
             local.drag = vec![slot];
             pending.push(InputAction::ClickSlot { slot, button: SimButton::Right, shift, ctrl });
         }
@@ -1201,7 +1203,7 @@ fn drag_spread(
     }
     let hovered = q.iter().find_map(|(i, b)| match (i, b) {
         (Interaction::None, _) => None,
-        (_, UiButton::Slot(s)) => Some(*s),
+        (_, UiButton::Slot(s @ SlotRef::Opened(..))) => Some(*s),
         _ => None,
     });
     let Some(slot) = hovered else { return };
@@ -1586,20 +1588,26 @@ fn module_row(p: &mut ChildSpawnerCommands, ctx: &mut Ctx, proto: &factorio_sim:
 
 /// An empty cell of a slot pane (`deep_slots_scroll_pane`'s tiled background).
 fn empty_cell(g: &mut ChildSpawnerCommands) {
-    let mut e = g.spawn(Node {
+    // As measured from the game: the cell is the pane's own colour, with only a lighter
+    // top edge, a darker bottom edge and faint sides.
+    g.spawn(Node {
         width: Val::Px(SLOT_PX),
         height: Val::Px(SLOT_PX),
         padding: UiRect::all(Val::Px(4.0)),
         ..default()
+    })
+    .with_children(|c| {
+        c.spawn((
+            Node { width: Val::Px(32.0), height: Val::Px(32.0), border: UiRect::all(Val::Px(1.0)), ..default() },
+            BorderColor {
+                top: Color::srgb_u8(56, 56, 56),
+                bottom: Color::srgb_u8(27, 27, 27),
+                left: Color::srgb_u8(35, 35, 35),
+                right: Color::srgb_u8(35, 35, 35),
+            },
+            Pickable::IGNORE,
+        ));
     });
-    if let Some(s) = &looks().empty_slot {
-        e.with_children(|c| {
-            c.spawn((
-                Node { width: Val::Px(32.0), height: Val::Px(32.0), ..default() },
-                crate::gui_skin::node_image(s),
-            ));
-        });
-    }
 }
 
 /// The title bar buttons of an entity window: the circuit network button for entities
