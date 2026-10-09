@@ -169,6 +169,7 @@ enum UiButton {
     OpenTech,
     CloseWindow,
     TechSearch,
+    ContainerLimit,
 }
 
 /// What the tooltip should describe when this element is hovered.
@@ -184,6 +185,8 @@ enum Tip {
 #[derive(Resource, Default)]
 struct Local_ {
     tab: usize,
+    /// The next slot click sets the opened container's limit.
+    limit_mode: bool,
     /// Slots swept by the current drag with the cursor stack.
     drag: Vec<SlotRef>,
     choosing_recipe: bool,
@@ -455,6 +458,15 @@ fn clicks(
     let player = sim.0.player(LOCAL_PLAYER);
     let held = character(&sim).and_then(|c| c.cursor).map(|c| c.item);
     match (target.clone(), button) {
+        (UiButton::Slot(SlotRef::Opened(EntityInventory::Main, i)), SimButton::Left) if local.limit_mode => {
+            local.limit_mode = false;
+            pending.push(InputAction::SetContainerLimit(Some(i)));
+        }
+        (UiButton::ContainerLimit, SimButton::Left) => local.limit_mode = !local.limit_mode,
+        (UiButton::ContainerLimit, SimButton::Right) => {
+            local.limit_mode = false;
+            pending.push(InputAction::SetContainerLimit(None));
+        }
         // Holding a stack, a left press on a free (or same-item) slot starts a drag-spread
         // (see `drag_spread`); everything else is an ordinary click.
         (UiButton::Slot(slot), SimButton::Left)
@@ -720,7 +732,34 @@ impl Ctx<'_> {
         grid(p, columns, |g| {
             for (i, s) in inv.slots().iter().enumerate() {
                 let hand = s.is_none() && inv.reserved() == Some(i);
-                self.slot_ext(g, s.map(|s| s.item), s.map(|s| s.count), INV, Some(UiButton::Slot(make(i))), None, hand);
+                // Slots past a container's limit are red; the first shows the limit mark.
+                let barred = inv.bar().is_some_and(|b| i >= b);
+                let bg = if barred { SLOT_RED } else { INV };
+                g.spawn(Node { width: Val::Px(SLOT_PX), height: Val::Px(SLOT_PX), ..default() }).with_children(|c| {
+                    self.slot_ext(
+                        c,
+                        s.map(|s| s.item),
+                        s.map(|s| s.count),
+                        bg,
+                        Some(UiButton::Slot(make(i))),
+                        None,
+                        hand,
+                    );
+                    if inv.bar() == Some(i) && s.is_none() {
+                        c.spawn((
+                            Node {
+                                position_type: PositionType::Absolute,
+                                left: Val::Px(4.0),
+                                top: Val::Px(4.0),
+                                width: Val::Px(32.0),
+                                height: Val::Px(32.0),
+                                ..default()
+                            },
+                            Pickable::IGNORE,
+                        ))
+                        .with_children(|m| self.utility(m, "set_bar_slot", 32.0));
+                    }
+                });
             }
         });
     }
@@ -1246,12 +1285,13 @@ fn window(
     let entity_sig = opened.map(|id| structure_sig(&sim, id)).unwrap_or_default();
     let belt = opened.and_then(|id| sim.0.belts.get(id)).map(|b| b.item_count());
     let sig = format!(
-        "{:?}|{:?}|{}|{}|{}|{:?}|{}|{cheat}|{}",
+        "{:?}|{:?}|{}|{}|{}|{}|{:?}|{}|{cheat}|{}",
         c.inventory,
         opened,
         entity_sig,
         local.tab,
         local.choosing_recipe,
+        local.limit_mode,
         belt,
         chart.range,
         sim.0.research().recipes.iter().filter(|e| **e).count()
@@ -1862,7 +1902,34 @@ fn entity_panel(
         }
     };
     match &e.state {
-        EntityState::Container(inv) => ctx.inventory(p, inv, 10, |i| SlotRef::Opened(EntityInventory::Main, i as u16)),
+        EntityState::Container(inv) => {
+            // The slots in a deep frame, as in the game.
+            p.spawn(Node { align_self: AlignSelf::FlexStart, ..default() }).with_children(|f| {
+                crate::gui_skin::backdrop(f, &looks().deep_in_shallow);
+                ctx.inventory(f, inv, 10, |i| SlotRef::Opened(EntityInventory::Main, i as u16));
+            });
+            // The limit button: click it, then a slot, to stop automatic filling from that
+            // slot on; right click removes the limit.
+            let l = looks();
+            let look = if local.limit_mode { &l.yellow_slot } else { &l.red_button };
+            p.spawn(Node { flex_direction: FlexDirection::Row, ..default() }).with_children(|r| {
+                r.spawn((
+                    Node {
+                        width: Val::Px(SLOT_PX),
+                        height: Val::Px(SLOT_PX),
+                        justify_content: JustifyContent::Center,
+                        align_items: AlignItems::Center,
+                        ..default()
+                    },
+                    crate::gui_skin::node_image(&look.default),
+                    look.clone(),
+                    UiButton::ContainerLimit,
+                    Button,
+                    Tip::Text("Limit: click, then click a slot. Right click removes the limit.".into()),
+                ))
+                .with_children(|b| ctx.utility(b, "set_bar_slot", 32.0));
+            });
+        }
         EntityState::Drill(d) => {
             let ticks = factorio_sim::machines::drill_resources(&sim.0, proto, e.position, e.direction)
                 .first()

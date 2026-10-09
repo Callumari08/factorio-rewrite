@@ -71,6 +71,10 @@ fn open_later(
     }
     if let Some(later) = later {
         pending.push(InputAction::OpenEntity(Some(later.0)));
+        // `FACTORIO_REWRITE_LIMIT=n` sets an opened chest's limit, for screenshots.
+        if let Some(n) = std::env::var("FACTORIO_REWRITE_LIMIT").ok().and_then(|v| v.parse().ok()) {
+            pending.push(InputAction::SetContainerLimit(Some(n)));
+        }
         commands.remove_resource::<OpenLater>();
     }
     if let Some(m) = mine {

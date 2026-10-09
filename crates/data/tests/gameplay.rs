@@ -781,6 +781,21 @@ mod cursor {
         }
     }
 
+    #[test]
+    fn container_limit_stops_insertion_past_the_bar() {
+        let d = game!();
+        let mut sim = flat_world(d);
+        let chest = place(&mut sim, "iron-chest", 2, 0, Direction::NORTH);
+        input(&mut sim, InputAction::OpenEntity(Some(MapPosition::tile_center(TilePosition::new(2, 0)))));
+        input(&mut sim, InputAction::SetContainerLimit(Some(2)));
+        let plate = item(&sim, "iron-plate");
+        let n = sim.insert_into_entity(chest, plate, 500, factorio_sim::world::InsertSource::Automated);
+        assert_eq!(n, 200);
+        assert!(!sim.entity_wants(chest, plate));
+        input(&mut sim, InputAction::SetContainerLimit(None));
+        assert!(sim.entity_wants(chest, plate));
+    }
+
     // The character's inventory sorts itself (as with the game's default setting), so
     // spreading shows in a chest.
     #[test]

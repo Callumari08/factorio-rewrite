@@ -305,6 +305,14 @@ pub(crate) fn apply_input(sim: &mut Simulation, player: u16, action: &InputActio
         InputAction::ClearCursor => crate::cursor::clear_cursor(sim, player),
         InputAction::SpreadCursor { ref slots } => crate::cursor::spread(sim, player, slots.clone()),
         InputAction::EndSpread => character_mut(sim, player).spread = None,
+        InputAction::SetContainerLimit(bar) => {
+            if let Some(id) = sim.players.get(&player).and_then(|p| p.opened)
+                && let Some(e) = sim.entities.get_mut(&id)
+                && let EntityState::Container(inv) = &mut e.state
+            {
+                inv.set_bar(bar.map(|b| b as usize));
+            }
+        }
         InputAction::CheatAllItems => cheat_all_items(sim, player),
         InputAction::SetCheatMode(on) => sim.players.get_mut(&player).unwrap().cheat_mode = on,
         InputAction::PickItem(item) => crate::cursor::pick_item(sim, player, item),

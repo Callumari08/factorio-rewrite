@@ -23,11 +23,14 @@ pub struct Inventory {
     /// An empty slot kept free for the stack held in the cursor (the game's "hand"):
     /// automatic insertion skips it; only placing into it by hand fills it.
     reserved: Option<u32>,
+    /// The container's limit (the game's "bar"): insertion and space only count the
+    /// slots before it. Clicking items into later slots by hand still works.
+    bar: Option<u32>,
 }
 
 impl Inventory {
     pub fn new(size: u32) -> Self {
-        Inventory { slots: vec![None; size as usize], reserved: None }
+        Inventory { slots: vec![None; size as usize], reserved: None, bar: None }
     }
 
     /// Adds empty slots up to `size` (never removes slots).
@@ -66,6 +69,20 @@ impl Inventory {
         self.reserved == Some(i as u32)
     }
 
+    /// The limit: slots from this index on are not filled automatically.
+    pub fn bar(&self) -> Option<usize> {
+        self.bar.map(|b| b as usize)
+    }
+
+    pub fn set_bar(&mut self, bar: Option<usize>) {
+        self.bar = bar.filter(|b| *b < self.slots.len()).map(|b| b as u32);
+    }
+
+    /// Whether automatic insertion may use slot `i`.
+    fn usable(&self, i: usize) -> bool {
+        !self.is_reserved(i) && self.bar.is_none_or(|b| i < b as usize)
+    }
+
     pub fn set_slot(&mut self, i: usize, stack: Option<ItemStack>) {
         self.slots[i] = stack.filter(|s| s.count > 0);
     }
@@ -81,6 +98,7 @@ impl Inventory {
             .iter()
             .enumerate()
             .map(|(i, s)| match s {
+                _ if self.bar.is_some_and(|b| i >= b as usize) => 0,
                 None if self.is_reserved(i) => 0,
                 None => stack,
                 Some(s) if s.item == item => stack.saturating_sub(s.count),
@@ -94,7 +112,8 @@ impl Inventory {
     pub fn insert(&mut self, db: &PrototypeDb, item: ItemId, count: u32) -> u32 {
         let stack_size = db.item(item).stack_size;
         let mut left = count;
-        for s in self.slots.iter_mut().flatten() {
+        let limit = self.bar.map_or(self.slots.len(), |b| b as usize);
+        for s in self.slots.iter_mut().take(limit).flatten() {
             if left == 0 {
                 break;
             }
@@ -104,12 +123,12 @@ impl Inventory {
                 left -= n;
             }
         }
-        let reserved = self.reserved;
+        let usable: Vec<bool> = (0..self.slots.len()).map(|i| self.usable(i)).collect();
         for (i, s) in self.slots.iter_mut().enumerate() {
             if left == 0 {
                 break;
             }
-            if s.is_none() && reserved != Some(i as u32) {
+            if s.is_none() && usable[i] {
                 let n = left.min(stack_size);
                 *s = Some(ItemStack::new(item, n));
                 left -= n;
@@ -164,10 +183,11 @@ impl Inventory {
         let mut contents: Vec<(ItemId, u32)> = self.contents().into_iter().collect();
         contents.sort_by_key(|(i, _)| (db.item(*i).sort_index, *i));
         let size = self.slots.len() as u32;
-        let reserved = self.reserved;
+        let (reserved, bar) = (self.reserved, self.bar);
         *self = Inventory::new(size);
         // The hand's slot stays put; the rest is sorted around it.
         self.reserved = reserved;
+        self.bar = bar;
         for (item, count) in contents {
             self.insert(db, item, count);
         }
