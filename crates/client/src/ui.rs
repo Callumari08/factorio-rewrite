@@ -838,9 +838,10 @@ fn frame_header(w: &mut ChildSpawnerCommands, ctx: &mut Ctx, title: &str, button
         flex_direction: FlexDirection::Row,
         align_items: AlignItems::Center,
         column_gap: Val::Px(8.0),
-        // Measured from the game: the panels start 40 px below the frame's top edge.
-        height: Val::Px(36.0),
-        padding: UiRect::bottom(Val::Px(4.0)),
+        // Measured from the game at 125 %: 10 px (at 100 %) from the filler's bottom edge to
+        // the panels.
+        height: Val::Px(37.0),
+        padding: UiRect::bottom(Val::Px(9.0)),
         ..default()
     })
     .with_children(|h| {
@@ -878,6 +879,8 @@ fn frame_header(w: &mut ChildSpawnerCommands, ctx: &mut Ctx, title: &str, button
             ));
             match *b {
                 "close" => e.insert((UiButton::CloseWindow, Tip::Text("Close".into()))),
+                "circuit_network_panel" => e.insert(Tip::Text("Circuit network connection".into())),
+                "logistic_network_panel_white" => e.insert(Tip::Text("Logistic network connection".into())),
                 _ => e.insert(Tip::Text("Search".into())),
             };
             e.with_children(|c| ctx.utility(c, b, 16.0));
@@ -1352,13 +1355,13 @@ fn window(
         Some(id) if !shows_inventory(&sim, id) => {
             let pole = sim.0.entity(id).is_some_and(|e| matches!(e.state, EntityState::Pole));
             let title = if pole { "Electric network info".to_owned() } else { title.clone() };
-            frame(w, &mut ctx, &title, &["close"], |w, ctx| {
+            frame(w, &mut ctx, &title, &network_buttons(&sim, &data, id), |w, ctx| {
                 panel(w, if pole { NETWORK_COL_W * 3.0 + 24.0 + 24.0 } else { PANEL_W }, |p| {
                     entity_panel(p, ctx, &sim, &names, id, &local, &chart, &mut images, &checker)
                 });
             })
         }
-        Some(id) => frame(w, &mut ctx, &title, &["close"], |w, ctx| {
+        Some(id) => frame(w, &mut ctx, &title, &network_buttons(&sim, &data, id), |w, ctx| {
             w.spawn(Node { flex_direction: FlexDirection::Row, column_gap: Val::Px(12.0), ..default() }).with_children(
                 |w| {
                     panel(w, PANEL_W, |p| {
@@ -1597,6 +1600,27 @@ fn empty_cell(g: &mut ChildSpawnerCommands) {
             ));
         });
     }
+}
+
+/// The title bar buttons of an entity window: the circuit network button for entities
+/// with circuit connectors, the logistic network button for those that can also be
+/// controlled by a logistic network (as in the game), then close.
+fn network_buttons(sim: &Sim, data: &Data, id: EntityId) -> Vec<&'static str> {
+    let mut out = Vec::new();
+    if let Some(e) = sim.0.entity(id) {
+        let proto = sim.0.prototypes().entity(e.proto);
+        let raw = data.0.prototype(&proto.kind, &proto.name);
+        if raw.get("circuit_wire_max_distance").as_f64().is_some_and(|d| d > 0.0) {
+            out.push("circuit_network_panel");
+            let logistic =
+                ["transport-belt", "inserter", "assembling-machine", "mining-drill", "pump", "offshore-pump", "lamp"];
+            if logistic.contains(&proto.kind.as_str()) {
+                out.push("logistic_network_panel_white");
+            }
+        }
+    }
+    out.push("close");
+    out
 }
 
 /// Whether an entity's window includes the character's inventory: only for entities
@@ -1861,6 +1885,7 @@ fn status(sim: &Sim, id: EntityId) -> (&'static str, Color) {
             }
         }
         EntityState::Container(_) => ("Normal", green),
+        EntityState::Belt => ("Working", green),
         _ => ("", TEXT),
     }
 }
