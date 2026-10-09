@@ -2416,6 +2416,7 @@ fn tooltip(
     mut root: Single<(Entity, &mut Node), With<TooltipRoot>>,
     mut last: Local<String>,
     mut misses: Local<u8>,
+    scale: Res<UiScale>,
 ) {
     let tip = hovered.iter().find(|(i, _)| **i != Interaction::None).map(|(_, t)| t.clone()).or_else(|| test_tip(&sim));
     let Some(tip) = tip else {
@@ -2430,6 +2431,8 @@ fn tooltip(
     };
     *misses = 0;
     if let Some(c) = window.cursor_position().or(test_tip(&sim).map(|_| Vec2::new(40.0, 120.0))) {
+        // UI lengths are scaled by the GUI scale; the cursor is in window pixels.
+        let c = c / scale.0;
         root.1.display = Display::Flex;
         root.1.left = Val::Px(c.x + 18.0);
         root.1.top = Val::Px(c.y + 18.0);
@@ -2526,6 +2529,7 @@ fn cursor_icon(
     mut sprites: ResMut<Sprites>,
     mut icon: Single<(&mut ImageNode, &mut Node, &Children), With<CursorIcon>>,
     mut texts: Query<&mut Text>,
+    scale: Res<UiScale>,
 ) {
     let held = character(&sim).and_then(|c| c.cursor);
     let place = held.is_some_and(|s| sim.0.prototypes().item(s.item).place_result.is_some());
@@ -2537,6 +2541,7 @@ fn cursor_icon(
         return;
     };
     node.display = Display::Flex;
+    let c = c / scale.0;
     node.left = Val::Px(c.x + 4.0);
     node.top = Val::Px(c.y + 4.0);
     let name = sim.0.prototypes().item(stack.item).name.clone();

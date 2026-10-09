@@ -171,12 +171,14 @@ pub(super) fn tree_view(
     mut tech: ResMut<TechUi>,
     canvas: Query<(&Interaction, &bevy::ui::ComputedNode, &bevy::ui::UiGlobalTransform), With<TreeCanvas>>,
     mut view: Query<&mut UiTransform, With<TreeView>>,
+    ui_scale: Res<UiScale>,
 ) {
     if !ui.tech_open {
         tech.drag = None;
         return;
     }
-    let Some(cursor) = window.cursor_position() else { return };
+    // In UI units (the GUI scale divides window pixels).
+    let Some(cursor) = window.cursor_position().map(|c| c / ui_scale.0) else { return };
     let over = canvas.iter().any(|(i, ..)| *i != Interaction::None);
     let held = mouse.pressed(MouseButton::Left) || mouse.pressed(MouseButton::Right);
     if over && (mouse.just_pressed(MouseButton::Left) || mouse.just_pressed(MouseButton::Right)) {
@@ -194,7 +196,7 @@ pub(super) fn tree_view(
         // Keep the point under the cursor in place: the view's origin is the canvas's
         // top centre (where the tree is anchored).
         if let Some((_, node, transform)) = canvas.iter().next() {
-            let scale = window.scale_factor();
+            let scale = window.scale_factor() * ui_scale.0;
             let size = node.size() / scale;
             let centre = transform.translation / scale;
             let origin = Vec2::new(centre.x, centre.y - size.y / 2.0);

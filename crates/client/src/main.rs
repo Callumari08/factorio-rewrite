@@ -115,7 +115,18 @@ fn main() -> AppExit {
         .add_plugins(
             DefaultPlugins
                 .set(WindowPlugin {
-                    primary_window: Some(Window { title: "Factorio Rewrite".into(), ..default() }),
+                    primary_window: Some(Window {
+                        title: "Factorio Rewrite".into(),
+                        // `FACTORIO_REWRITE_WINDOW=WxH` sets the size, for screenshots.
+                        resolution: std::env::var("FACTORIO_REWRITE_WINDOW")
+                            .ok()
+                            .and_then(|v| {
+                                let (w, h) = v.split_once('x')?;
+                                Some(bevy::window::WindowResolution::new(w.parse().ok()?, h.parse().ok()?))
+                            })
+                            .unwrap_or_default(),
+                        ..default()
+                    }),
                     ..default()
                 })
                 .set(ImagePlugin::default_linear()),

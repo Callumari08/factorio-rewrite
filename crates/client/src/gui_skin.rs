@@ -13,7 +13,7 @@ pub struct GuiSkinPlugin;
 
 impl Plugin for GuiSkinPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(PreStartup, (load, resolve).chain()).add_systems(Update, button_states);
+        app.add_systems(PreStartup, (load, resolve).chain()).add_systems(Update, (button_states, ui_scale));
     }
 }
 
@@ -423,5 +423,38 @@ pub fn backdrop(parent: &mut ChildSpawnerCommands, s: &Slice) {
             ZIndex(-1),
             Pickable::IGNORE,
         ));
+    }
+}
+
+/// The GUI scale, as the game picks it: `custom-ui-scale` when `ui-scale-mode` is manual
+/// in the player's `config.ini`, otherwise automatic (100 % per 1080 window pixels of
+/// height, in 25 % steps, so 125 % at 1440p and 200 % at 2160p).
+pub fn ui_scale(
+    window: Single<&Window, With<bevy::window::PrimaryWindow>>,
+    data: Res<Data>,
+    mut scale: ResMut<UiScale>,
+    mut manual: Local<Option<Option<f32>>>,
+) {
+    let manual = *manual.get_or_insert_with(|| {
+        let root = &data.0.install.root;
+        let mut paths = vec![root.join("config").join("config.ini")];
+        if let Some(home) = std::env::var_os("HOME") {
+            paths.push(std::path::PathBuf::from(home).join(".factorio/config/config.ini"));
+        }
+        let text = paths.iter().find_map(|p| std::fs::read_to_string(p).ok())?;
+        let value = |key: &str| {
+            text.lines().map(str::trim).find_map(|l| l.strip_prefix(key)?.strip_prefix('=').map(str::to_owned))
+        };
+        (value("ui-scale-mode").as_deref() == Some("manual"))
+            .then(|| value("custom-ui-scale").and_then(|v| v.parse().ok()))
+            .flatten()
+    });
+    // `FACTORIO_REWRITE_UI_SCALE` overrides, for screenshots.
+    let forced = std::env::var("FACTORIO_REWRITE_UI_SCALE").ok().and_then(|v| v.parse().ok());
+    let height = window.physical_height() as f32 / window.scale_factor();
+    let auto = ((height / 1080.0 * 4.0).floor() / 4.0).max(1.0);
+    let s = forced.or(manual).unwrap_or(auto);
+    if scale.0 != s {
+        scale.0 = s;
     }
 }
