@@ -286,7 +286,7 @@ fn sub_key(db: &PrototypeDb, d: &factorio_data::GameData, r: RecipeId) -> String
     order + &subgroup
 }
 
-fn setup(mut commands: Commands, fonts: Res<Fonts>) {
+fn setup(mut commands: Commands, fonts: Res<Fonts>, mut images: ResMut<Assets<Image>>) {
     let text = |size: f32| TextFont { font: fonts.regular.clone(), font_size: size, ..default() };
     commands.spawn((
         HudText,
@@ -322,7 +322,7 @@ fn setup(mut commands: Commands, fonts: Res<Fonts>) {
     ));
     // The mining bar: a 13 px strip resting on the quickbar's top edge, the quickbar's
     // width, black behind the orange fill (measured from the game).
-    let l = looks();
+    let mining_fill = images.add(mining_gradient());
     commands
         .spawn((
             MiningBar,
@@ -343,12 +343,7 @@ fn setup(mut commands: Commands, fonts: Res<Fonts>) {
             b.spawn((
                 LiveFill(Live::Mining),
                 Node { width: Val::Percent(0.0), height: Val::Px(13.0), ..default() },
-                ImageNode {
-                    image: l.health_bar.image.clone(),
-                    rect: Some(l.health_bar.rect),
-                    color: l.mining_color,
-                    ..default()
-                },
+                ImageNode::new(mining_fill),
             ));
         });
     // Windows are centred on the screen; the root only lays them out (each frame catches
@@ -1568,6 +1563,39 @@ fn live_value(sim: &Sim, live: Live) -> f64 {
         _ => 0.0,
     };
     v.clamp(0.0, 1.0)
+}
+
+/// The mining bar's fill: the game's orange, bright at the top and dark at the bottom,
+/// the same across its whole length (measured from a screenshot at 125 %, 16 rows).
+/// One texel wide, so stretching it never darkens the ends.
+fn mining_gradient() -> Image {
+    const ROWS: [[u8; 3]; 16] = [
+        [249, 168, 56],
+        [244, 164, 55],
+        [234, 158, 53],
+        [219, 148, 49],
+        [204, 137, 46],
+        [188, 127, 42],
+        [173, 117, 39],
+        [157, 106, 35],
+        [141, 95, 32],
+        [125, 85, 28],
+        [110, 74, 25],
+        [95, 64, 21],
+        [76, 51, 17],
+        [59, 39, 13],
+        [47, 31, 10],
+        [39, 27, 9],
+    ];
+    let mut image = Image::new(
+        bevy::render::render_resource::Extent3d { width: 1, height: 16, depth_or_array_layers: 1 },
+        bevy::render::render_resource::TextureDimension::D2,
+        ROWS.iter().flat_map(|c| [c[0], c[1], c[2], 255]).collect(),
+        bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
+        bevy::asset::RenderAssetUsages::RENDER_WORLD,
+    );
+    image.sampler = bevy::image::ImageSampler::linear();
+    image
 }
 
 /// How far the character is through mining what it is mining, if anything.
