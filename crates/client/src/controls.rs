@@ -36,6 +36,8 @@ pub struct UiState {
     pub settings_open: bool,
     /// True while the pointer is over a UI panel.
     pub pointer_over_ui: bool,
+    /// True while a search box takes the keyboard: game keys are ignored.
+    pub typing: bool,
     pub status: String,
 }
 
@@ -174,6 +176,14 @@ fn keyboard(
     // otherwise the character keeps walking (the game only walks while keys are held).
     if focus.read().any(|f| !f.focused) {
         keys.reset_all();
+    }
+    if ui.typing {
+        // The search box has the keyboard; stop walking.
+        if state.walking.is_some() {
+            state.walking = None;
+            pending.push(InputAction::SetWalking(None));
+        }
+        return;
     }
     let (mut dx, mut dy) = (0, 0);
     if keys.pressed(KeyCode::KeyW) {

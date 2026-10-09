@@ -31,7 +31,10 @@ impl Plugin for UiPlugin {
         app.add_plugins(FrameTimeDiagnosticsPlugin::default())
             .add_systems(Startup, (load_names, setup, research::setup, hud::setup).chain())
             .add_systems(PostUpdate, font_weights.before(bevy::ui::UiSystems::Prepare))
-            .add_systems(Update, (mining_bar, drag_spread.after(clicks)))
+            .add_systems(
+                Update,
+                (mining_bar, drag_spread.after(clicks), research::tree_view, research::search_typing.before(clicks)),
+            )
             .add_systems(
                 Update,
                 (
@@ -165,6 +168,7 @@ enum UiButton {
     DequeueTech(TechId),
     OpenTech,
     CloseWindow,
+    TechSearch,
 }
 
 /// What the tooltip should describe when this element is hovered.
@@ -487,7 +491,11 @@ fn clicks(
         (UiButton::ChangeRecipe, _) => local.choosing_recipe = !local.choosing_recipe,
         (UiButton::ChartRange(r), _) => chart.range = r,
         (UiButton::QueueCancel(i), _) => pending.push(InputAction::CancelCraft { index: i }),
-        (UiButton::SelectTech(t), SimButton::Left) => tech.selected = Some(t),
+        (UiButton::SelectTech(t), SimButton::Left) => {
+            tech.selected = Some(t);
+            // The tree recentres on the new selection.
+            tech.pan = Vec2::ZERO;
+        }
         // Right click on a queued technology removes it, as in the game's queue.
         (UiButton::SelectTech(t), SimButton::Right) => pending.push(InputAction::DequeueResearch(t)),
         (UiButton::QueueTech(t), _) => pending.push(InputAction::QueueResearch { tech: t, front: shift }),
@@ -495,6 +503,10 @@ fn clicks(
         (UiButton::CloseWindow, _) => {
             ui.inventory_open = false;
             pending.push(InputAction::OpenEntity(None));
+        }
+        (UiButton::TechSearch, _) => {
+            tech.search = if tech.search.is_some() { None } else { Some(String::new()) };
+            ui.typing = tech.search.is_some();
         }
         (UiButton::OpenTech, _) => {
             ui.tech_open = true;

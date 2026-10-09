@@ -13,7 +13,20 @@ use super::*;
 pub(super) struct TechUi {
     pub selected: Option<TechId>,
     scroll: f32,
+    /// The list's search text while searching.
+    pub search: Option<String>,
+    /// The tree view's pan (screen pixels) and zoom.
+    pub pan: Vec2,
+    pub zoom: f32,
+    /// The pan when a drag began, and where.
+    drag: Option<(Vec2, Vec2)>,
 }
+
+/// The tree's canvas (catches the mouse) and the view inside it (moved and scaled).
+#[derive(Component)]
+pub(super) struct TreeCanvas;
+#[derive(Component)]
+pub(super) struct TreeView;
 
 #[derive(Component)]
 pub(super) struct TechRoot;
@@ -25,7 +38,9 @@ pub(super) struct TechList;
 pub(super) fn setup(mut commands: Commands, sim: Res<Sim>) {
     // `FACTORIO_REWRITE_TECH=<name>` selects a technology at start, for screenshots.
     let selected = std::env::var("FACTORIO_REWRITE_TECH").ok().and_then(|n| sim.0.prototypes().technology_id(&n));
-    commands.insert_resource(TechUi { selected, scroll: 0.0 });
+    // `FACTORIO_REWRITE_TECH_SEARCH=<text>` starts with a search, for screenshots.
+    let search = std::env::var("FACTORIO_REWRITE_TECH_SEARCH").ok();
+    commands.insert_resource(TechUi { selected, scroll: 0.0, search, pan: Vec2::ZERO, zoom: 1.0, drag: None });
     commands.spawn((
         TechRoot,
         Interaction::default(),
@@ -133,8 +148,9 @@ pub(super) fn scroll(
     ui: Res<UiState>,
     mut tech: ResMut<TechUi>,
     mut list: Query<&mut ScrollPosition, With<TechList>>,
+    canvas: Query<&Interaction, With<TreeCanvas>>,
 ) {
-    if !ui.tech_open || scroll.delta.y == 0.0 {
+    if !ui.tech_open || scroll.delta.y == 0.0 || canvas.iter().any(|i| *i != Interaction::None) {
         return;
     }
     tech.scroll = (tech.scroll - scroll.delta.y * 40.0).max(0.0);
@@ -142,6 +158,90 @@ pub(super) fn scroll(
         s.0.y = tech.scroll;
         // The layout clamps the position; keep ours in step.
         tech.scroll = s.0.y.max(0.0).min(tech.scroll);
+    }
+}
+
+/// The tree view: drag with either mouse button to pan, the wheel zooms about the
+/// cursor (0.25x to 2x), as in the game.
+pub(super) fn tree_view(
+    scroll: Res<AccumulatedMouseScroll>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    window: Single<&Window, With<PrimaryWindow>>,
+    ui: Res<UiState>,
+    mut tech: ResMut<TechUi>,
+    canvas: Query<(&Interaction, &bevy::ui::ComputedNode, &bevy::ui::UiGlobalTransform), With<TreeCanvas>>,
+    mut view: Query<&mut UiTransform, With<TreeView>>,
+) {
+    if !ui.tech_open {
+        tech.drag = None;
+        return;
+    }
+    let Some(cursor) = window.cursor_position() else { return };
+    let over = canvas.iter().any(|(i, ..)| *i != Interaction::None);
+    let held = mouse.pressed(MouseButton::Left) || mouse.pressed(MouseButton::Right);
+    if over && (mouse.just_pressed(MouseButton::Left) || mouse.just_pressed(MouseButton::Right)) {
+        tech.drag = Some((tech.pan, cursor));
+    }
+    if !held {
+        tech.drag = None;
+    }
+    if let Some((start, at)) = tech.drag {
+        tech.pan = start + (cursor - at);
+    }
+    if over && scroll.delta.y != 0.0 {
+        let old = tech.zoom;
+        let new = (old * if scroll.delta.y > 0.0 { 1.15 } else { 1.0 / 1.15 }).clamp(0.25, 2.0);
+        // Keep the point under the cursor in place: the view's origin is the canvas's
+        // top centre (where the tree is anchored).
+        if let Some((_, node, transform)) = canvas.iter().next() {
+            let scale = window.scale_factor();
+            let size = node.size() / scale;
+            let centre = transform.translation / scale;
+            let origin = Vec2::new(centre.x, centre.y - size.y / 2.0);
+            let p = cursor - origin;
+            tech.pan = p - (p - tech.pan) * (new / old);
+        }
+        tech.zoom = new;
+    }
+    for mut t in &mut view {
+        t.translation = Val2::px(tech.pan.x, tech.pan.y);
+        t.scale = Vec2::splat(tech.zoom);
+    }
+}
+
+/// Typing into the technology search box.
+pub(super) fn search_typing(
+    mut keys: MessageReader<bevy::input::keyboard::KeyboardInput>,
+    mut tech: ResMut<TechUi>,
+    mut ui: ResMut<UiState>,
+) {
+    if !ui.tech_open && tech.search.is_some() {
+        tech.search = None;
+        ui.typing = false;
+    }
+    let Some(text) = tech.search.as_mut() else {
+        keys.clear();
+        return;
+    };
+    for k in keys.read() {
+        if k.state != bevy::input::ButtonState::Pressed {
+            continue;
+        }
+        match &k.logical_key {
+            bevy::input::keyboard::Key::Backspace => {
+                text.pop();
+            }
+            bevy::input::keyboard::Key::Escape | bevy::input::keyboard::Key::Enter => {
+                if text.is_empty() || matches!(k.logical_key, bevy::input::keyboard::Key::Escape) {
+                    tech.search = None;
+                }
+                ui.typing = false;
+                return;
+            }
+            bevy::input::keyboard::Key::Character(c) => text.push_str(c),
+            bevy::input::keyboard::Key::Space => text.push(' '),
+            _ => {}
+        }
     }
 }
 
@@ -302,7 +402,8 @@ pub(super) fn window(
     let db = sim.0.prototypes();
     let current_progress = r.current().map(|t| (r.progress_fraction(db, t).raw() >> 10, r.trigger_counts.clone()));
     let sig = format!(
-        "{:?}|{:?}|{}|{:?}|{:?}",
+        "{:?}|{:?}|{:?}|{}|{:?}|{:?}",
+        tech.search,
         tech.selected,
         r.queue,
         r.researched.iter().filter(|x| **x).count(),
@@ -328,6 +429,17 @@ pub(super) fn window(
         (state, depth(db, *t, &mut memo), db.technology(*t).order.clone(), db.technology(*t).name.clone())
     });
     let selected = tech.selected.filter(|t| visible(db, *t)).or(r.current()).or_else(|| order.first().copied());
+    if let Some(q) = tech.search.as_ref().filter(|q| !q.is_empty()) {
+        let q = q.to_lowercase();
+        // As in the game, a technology matches by its name or by what it unlocks.
+        order.retain(|t| {
+            names.tech(r, *t).to_lowercase().contains(&q)
+                || db.technology(*t).effects.iter().any(|e| match e {
+                    TechEffect::UnlockRecipe(rec) => names.recipe(*rec).to_lowercase().contains(&q),
+                    _ => false,
+                })
+        });
+    }
 
     let root_id = root.0;
     commands.entity(root_id).despawn_related::<Children>();
@@ -387,10 +499,24 @@ pub(super) fn window(
                         crate::gui_skin::node_image(&l.frame_button.default),
                         l.frame_button.clone(),
                         Button,
-                        Tip::Text("Search".into()),
+                        UiButton::TechSearch,
+                        Tip::Text("Search (type, Enter to keep, Esc to clear)".into()),
                     ))
                     .with_children(|b| ctx.utility(b, "search", 16.0));
                 });
+            // The search box, while searching.
+            if let Some(q) = &tech.search {
+                left.spawn((
+                    Node {
+                        height: Val::Px(28.0),
+                        align_items: AlignItems::Center,
+                        padding: UiRect::horizontal(Val::Px(6.0)),
+                        ..default()
+                    },
+                    crate::gui_skin::node_image(&looks().textbox),
+                ))
+                .with_children(|b| ctx.text(b, format!("{q}|"), 14.0, Color::BLACK));
+            }
             left.spawn((
                 TechList,
                 ScrollPosition(Vec2::new(0.0, tech.scroll)),
@@ -423,14 +549,36 @@ pub(super) fn window(
                 right.spawn((Node { height: Val::Px(36.0), ..default() }, BackgroundColor(INNER)));
                 right
                     .spawn((
+                        TreeCanvas,
+                        Interaction::default(),
                         Node { flex_grow: 1.0, overflow: Overflow::clip(), ..default() },
                         // Blending is linear: 0.85 darkens the world to about 40 % brightness.
                         BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.85)),
                     ))
                     .with_children(|canvas| {
-                        if let Some(t) = selected {
-                            tree(canvas, &mut ctx, t);
-                        }
+                        // Pan and zoom apply to this view (see `tree_view`).
+                        canvas
+                            .spawn((
+                                TreeView,
+                                UiTransform {
+                                    translation: Val2::px(tech.pan.x, tech.pan.y),
+                                    scale: Vec2::splat(tech.zoom),
+                                    ..default()
+                                },
+                                Node {
+                                    position_type: PositionType::Absolute,
+                                    left: Val::Px(0.0),
+                                    right: Val::Px(0.0),
+                                    top: Val::Px(0.0),
+                                    bottom: Val::Px(0.0),
+                                    ..default()
+                                },
+                            ))
+                            .with_children(|view| {
+                                if let Some(t) = selected {
+                                    tree(view, &mut ctx, t);
+                                }
+                            });
                     });
             });
     });
