@@ -88,6 +88,13 @@ Read this first when picking the project up in a new session. See also
   go-ahead in the thread each time; batch captures. Our own game's screenshot runs
   (`FACTORIO_REWRITE_SCREENSHOT=...png FACTORIO_REWRITE_SCREENSHOT_AFTER=4`) are fine
   without asking; keep them brief. Map previews (`--generate-map-preview`) open no window.
+- **GUI references** live in the gitignored `screenshots/reference/` (Callum's pasted
+  screenshots, 2560x1440 at his automatic 125 % GUI scale). The one-shot real-game
+  capture run (isolated config and a `guishot` mod) is `screenshots/capture/capture.sh`.
+  Script screenshots cannot show the HUD, tooltips or hover panels; ask Callum to paste
+  those. Screenshot hooks: `FACTORIO_REWRITE_UI=e|tech|settings|chest|furnace|lab|drill|
+  inserter|belt|power|fluid|mine|hand`, `FACTORIO_REWRITE_TIP=recipe:<name>`,
+  `FACTORIO_REWRITE_INFO=1`, `FACTORIO_REWRITE_UI_SCALE`, `FACTORIO_REWRITE_DEMO=1`.
 - Send Callum short progress notes every few minutes during long work; small commits,
   pushed to `main`.
 
