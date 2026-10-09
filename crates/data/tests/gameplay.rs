@@ -782,6 +782,22 @@ mod cursor {
     }
 
     #[test]
+    fn filtered_slots_only_take_their_item() {
+        let d = game!();
+        let mut sim = flat_world(d);
+        let plate = item(&sim, "iron-plate");
+        input(&mut sim, InputAction::SetSlotFilter { slot: 0, item: Some(plate) });
+        give(&mut sim, "coal", 10);
+        let inv = &sim.player(0).unwrap().character.as_ref().unwrap().inventory;
+        assert!(inv.slot(0).is_none(), "coal must not go into the iron plate slot");
+        give(&mut sim, "iron-plate", 10);
+        let inv = &sim.player(0).unwrap().character.as_ref().unwrap().inventory;
+        assert_eq!(inv.slot(0).map(|s| (s.item, s.count)), Some((plate, 10)));
+        input(&mut sim, InputAction::SetSlotFilter { slot: 0, item: None });
+        assert_eq!(sim.player(0).unwrap().character.as_ref().unwrap().inventory.filter(0), None);
+    }
+
+    #[test]
     fn container_limit_stops_insertion_past_the_bar() {
         let d = game!();
         let mut sim = flat_world(d);

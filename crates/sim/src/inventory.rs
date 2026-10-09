@@ -26,11 +26,14 @@ pub struct Inventory {
     /// The container's limit (the game's "bar"): insertion and space only count the
     /// slots before it. Clicking items into later slots by hand still works.
     bar: Option<u32>,
+    /// Slot filters (the game's middle click): a filtered slot only takes its item.
+    /// Empty when no slot is filtered.
+    filters: Vec<Option<ItemId>>,
 }
 
 impl Inventory {
     pub fn new(size: u32) -> Self {
-        Inventory { slots: vec![None; size as usize], reserved: None, bar: None }
+        Inventory { slots: vec![None; size as usize], reserved: None, bar: None, filters: Vec::new() }
     }
 
     /// Adds empty slots up to `size` (never removes slots).
@@ -78,6 +81,29 @@ impl Inventory {
         self.bar = bar.filter(|b| *b < self.slots.len()).map(|b| b as u32);
     }
 
+    /// Slot `i`'s filter.
+    pub fn filter(&self, i: usize) -> Option<ItemId> {
+        self.filters.get(i).copied().flatten()
+    }
+
+    pub fn set_filter(&mut self, i: usize, item: Option<ItemId>) {
+        if i >= self.slots.len() {
+            return;
+        }
+        if self.filters.len() < self.slots.len() {
+            self.filters.resize(self.slots.len(), None);
+        }
+        self.filters[i] = item;
+        if self.filters.iter().all(Option::is_none) {
+            self.filters.clear();
+        }
+    }
+
+    /// Whether slot `i` may hold `item` (its filter allows it).
+    pub fn allows(&self, i: usize, item: ItemId) -> bool {
+        self.filter(i).is_none_or(|f| f == item)
+    }
+
     /// Whether automatic insertion may use slot `i`.
     fn usable(&self, i: usize) -> bool {
         !self.is_reserved(i) && self.bar.is_none_or(|b| i < b as usize)
@@ -98,7 +124,7 @@ impl Inventory {
             .iter()
             .enumerate()
             .map(|(i, s)| match s {
-                _ if self.bar.is_some_and(|b| i >= b as usize) => 0,
+                _ if self.bar.is_some_and(|b| i >= b as usize) || !self.allows(i, item) => 0,
                 None if self.is_reserved(i) => 0,
                 None => stack,
                 Some(s) if s.item == item => stack.saturating_sub(s.count),
@@ -123,15 +149,20 @@ impl Inventory {
                 left -= n;
             }
         }
+        // Empty slots: those filtered for this item first, then unfiltered ones.
         let usable: Vec<bool> = (0..self.slots.len()).map(|i| self.usable(i)).collect();
-        for (i, s) in self.slots.iter_mut().enumerate() {
-            if left == 0 {
-                break;
-            }
-            if s.is_none() && usable[i] {
-                let n = left.min(stack_size);
-                *s = Some(ItemStack::new(item, n));
-                left -= n;
+        for pass in [true, false] {
+            for (i, s) in self.slots.iter_mut().enumerate() {
+                if left == 0 {
+                    break;
+                }
+                let f = self.filters.get(i).copied().flatten();
+                let fits = if pass { f == Some(item) } else { f.is_none() };
+                if s.is_none() && usable[i] && fits {
+                    let n = left.min(stack_size);
+                    *s = Some(ItemStack::new(item, n));
+                    left -= n;
+                }
             }
         }
         count - left
@@ -183,11 +214,12 @@ impl Inventory {
         let mut contents: Vec<(ItemId, u32)> = self.contents().into_iter().collect();
         contents.sort_by_key(|(i, _)| (db.item(*i).sort_index, *i));
         let size = self.slots.len() as u32;
-        let (reserved, bar) = (self.reserved, self.bar);
+        let (reserved, bar, filters) = (self.reserved, self.bar, std::mem::take(&mut self.filters));
         *self = Inventory::new(size);
-        // The hand's slot stays put; the rest is sorted around it.
+        // The hand's slot and the filters stay put; the rest is sorted around them.
         self.reserved = reserved;
         self.bar = bar;
+        self.filters = filters;
         for (item, count) in contents {
             self.insert(db, item, count);
         }

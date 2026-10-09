@@ -95,6 +95,11 @@ pub enum InputAction {
     /// Sets the opened container's limit (the game's red X): slots from `bar` on are not
     /// filled by inserters or transfers. `None` removes it.
     SetContainerLimit(Option<u16>),
+    /// Sets (or clears) a character inventory slot's filter (middle click).
+    SetSlotFilter {
+        slot: u16,
+        item: Option<ItemId>,
+    },
     /// Puts the cursor stack back into the inventory (Q).
     ClearCursor,
     /// Takes a stack of the item from the inventory into the cursor (quickbar keys, pipette).

@@ -97,6 +97,10 @@ fn open_from_env(mut commands: Commands, sim: Res<Sim>, mut ui: ResMut<UiState>,
         return;
     }
     ui.inventory_open = true;
+    // `FACTORIO_REWRITE_FILTER=<item>` filters the last inventory slot, for screenshots.
+    if let Some(item) = std::env::var("FACTORIO_REWRITE_FILTER").ok().and_then(|n| sim.0.prototypes().item_id(&n)) {
+        pending.push(InputAction::SetSlotFilter { slot: 79, item: Some(item) });
+    }
     // `FACTORIO_REWRITE_UI=mine` mines the nearest rock or tree (showing the mining bar).
     if std::env::var("FACTORIO_REWRITE_UI").is_ok_and(|v| v == "mine") {
         ui.inventory_open = false;

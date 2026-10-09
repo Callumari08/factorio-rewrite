@@ -95,7 +95,7 @@ pub(crate) fn click_slot(
                 if i as usize >= inv.len() {
                     return;
                 }
-                (inv.slot(i as usize), cur.is_some())
+                (inv.slot(i as usize), cur.is_some_and(|c| inv.allows(i as usize, c.item)))
             }
             SlotRef::Opened(which, i) => {
                 let Some(id) = opened else { return };
@@ -367,7 +367,9 @@ pub(crate) fn spread(sim: &mut Simulation, player: u16, slots: Vec<SlotRef>) {
         }
         let Some(contents) = read_slot(sim, player, slot) else { continue };
         let accepts = match slot {
-            SlotRef::Character(_) => true,
+            SlotRef::Character(i) => {
+                character_inventory(sim, player).is_some_and(|inv| inv.allows(i as usize, stack.item))
+            }
             SlotRef::Opened(which, i) => {
                 opened.is_some_and(|id| slot_accepts(&db, sim, id, which, i as usize, stack.item))
             }

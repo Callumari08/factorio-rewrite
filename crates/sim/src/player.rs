@@ -305,6 +305,9 @@ pub(crate) fn apply_input(sim: &mut Simulation, player: u16, action: &InputActio
         InputAction::ClearCursor => crate::cursor::clear_cursor(sim, player),
         InputAction::SpreadCursor { ref slots } => crate::cursor::spread(sim, player, slots.clone()),
         InputAction::EndSpread => character_mut(sim, player).spread = None,
+        InputAction::SetSlotFilter { slot, item } => {
+            character_mut(sim, player).inventory.set_filter(slot as usize, item);
+        }
         InputAction::SetContainerLimit(bar) => {
             if let Some(id) = sim.players.get(&player).and_then(|p| p.opened)
                 && let Some(e) = sim.entities.get_mut(&id)

@@ -442,6 +442,21 @@ fn clicks(
     mut ui: ResMut<UiState>,
     mut gui_clicks: ResMut<crate::sound::GuiClicks>,
 ) {
+    // Middle click on a character slot sets its filter to the item in it (or held), or
+    // clears it, as in the game.
+    if mouse.just_pressed(MouseButton::Middle)
+        && let Some((_, UiButton::Slot(SlotRef::Character(i)))) = q.iter().find(|(i, _)| **i != Interaction::None)
+        && let Some(c) = character(&sim)
+    {
+        let i = *i;
+        let item = if c.inventory.filter(i as usize).is_some() {
+            None
+        } else {
+            c.inventory.slot(i as usize).map(|s| s.item).or(c.cursor.map(|s| s.item))
+        };
+        pending.push(InputAction::SetSlotFilter { slot: i, item });
+        return;
+    }
     let button = if mouse.just_pressed(MouseButton::Left) {
         SimButton::Left
     } else if mouse.just_pressed(MouseButton::Right) {
@@ -745,6 +760,21 @@ impl Ctx<'_> {
                         None,
                         hand,
                     );
+                    // An empty filtered slot shows its item pale.
+                    if let (None, Some(f)) = (s, inv.filter(i)) {
+                        c.spawn((
+                            Node {
+                                position_type: PositionType::Absolute,
+                                left: Val::Px(4.0),
+                                top: Val::Px(4.0),
+                                width: Val::Px(32.0),
+                                height: Val::Px(32.0),
+                                ..default()
+                            },
+                            Pickable::IGNORE,
+                        ))
+                        .with_children(|m| self.icon_tinted(m, f, 32.0, Color::srgba(1.0, 1.0, 1.0, 0.35)));
+                    }
                     if inv.bar() == Some(i) && s.is_none() {
                         c.spawn((
                             Node {
