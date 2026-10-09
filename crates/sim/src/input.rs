@@ -40,34 +40,73 @@ pub enum InputAction {
     /// Starts mining whatever is at the position (entity first, then resource), or stops.
     SetMining(Option<MapPosition>),
     /// Builds the item's place result from the character's inventory.
-    Build { item: ItemId, position: MapPosition, direction: Direction },
+    Build {
+        item: ItemId,
+        position: MapPosition,
+        direction: Direction,
+    },
     /// Rotates the entity at the position clockwise (or counter-clockwise).
-    Rotate { position: MapPosition, reverse: bool },
+    Rotate {
+        position: MapPosition,
+        reverse: bool,
+    },
     /// Queues hand crafting, crafting missing intermediates first.
-    Craft { recipe: RecipeId, count: u32 },
+    Craft {
+        recipe: RecipeId,
+        count: u32,
+    },
     /// Cancels the queued craft at `index` and refunds its ingredients.
-    CancelCraft { index: u32 },
+    CancelCraft {
+        index: u32,
+    },
     /// Moves items from the character's inventory into the entity at the position.
-    TransferToEntity { position: MapPosition, item: ItemId, count: u32 },
+    TransferToEntity {
+        position: MapPosition,
+        item: ItemId,
+        count: u32,
+    },
     /// Takes everything from the entity's output (or whole inventory for containers).
-    TakeFromEntity { position: MapPosition },
+    TakeFromEntity {
+        position: MapPosition,
+    },
     /// Sets an assembling machine's recipe; current contents go back to the character.
-    SetRecipe { position: MapPosition, recipe: Option<RecipeId> },
+    SetRecipe {
+        position: MapPosition,
+        recipe: Option<RecipeId>,
+    },
     /// Picks up items on the ground and on belts next to the character.
     PickupItems,
     /// Opens (or with `None` closes) the window of the entity at the position.
     OpenEntity(Option<MapPosition>),
     /// A click on an inventory slot, with Factorio's cursor semantics.
-    ClickSlot { slot: SlotRef, button: MouseButton, shift: bool, ctrl: bool },
+    ClickSlot {
+        slot: SlotRef,
+        button: MouseButton,
+        shift: bool,
+        ctrl: bool,
+    },
+    /// Left-dragging the cursor stack across slots: the stack (as it was when the drag
+    /// began) is split evenly over `slots`, all the slots dragged over so far. Sent again
+    /// as each new slot is entered; `EndSpread` finishes the drag.
+    SpreadCursor {
+        slots: Vec<SlotRef>,
+    },
+    EndSpread,
     /// Puts the cursor stack back into the inventory (Q).
     ClearCursor,
     /// Takes a stack of the item from the inventory into the cursor (quickbar keys, pipette).
     PickItem(ItemId),
     /// Assigns (or clears) a quickbar slot.
-    SetQuickbar { index: u8, item: Option<ItemId> },
+    SetQuickbar {
+        index: u8,
+        item: Option<ItemId>,
+    },
     /// Ctrl+click on an entity in the world: insert the cursor stack, or with an empty cursor
     /// take its output. `half` is Ctrl+right click.
-    FastTransfer { position: MapPosition, half: bool },
+    FastTransfer {
+        position: MapPosition,
+        half: bool,
+    },
     /// Sandbox: a full stack of every item; what does not fit goes into chests placed
     /// next to the character.
     CheatAllItems,
@@ -75,7 +114,10 @@ pub enum InputAction {
     SetCheatMode(bool),
     /// Adds a technology (and missing prerequisites) to the research queue, at the front
     /// when `front` is set.
-    QueueResearch { tech: TechId, front: bool },
+    QueueResearch {
+        tech: TechId,
+        front: bool,
+    },
     /// Removes a technology, and queued technologies needing it, from the research queue.
     DequeueResearch(TechId),
     /// Researches every technology (Factorio's `/cheat all`).
@@ -83,13 +125,27 @@ pub enum InputAction {
     /// Sandbox/testing: moves the character (Factorio's `/c player.teleport`).
     CheatTeleport(MapPosition),
     /// Sandbox/testing: adds items to the character's inventory.
-    CheatItems { item: ItemId, count: u32 },
+    CheatItems {
+        item: ItemId,
+        count: u32,
+    },
     /// Sandbox/testing: places an entity without needing the item or reach.
-    CheatPlaceEntity { entity: EntityProtoId, position: MapPosition, direction: Direction },
+    CheatPlaceEntity {
+        entity: EntityProtoId,
+        position: MapPosition,
+        direction: Direction,
+    },
     /// Sandbox/testing: inserts items into the entity at the position without reach.
-    CheatInsert { position: MapPosition, item: ItemId, count: u32 },
+    CheatInsert {
+        position: MapPosition,
+        item: ItemId,
+        count: u32,
+    },
     /// Sandbox/testing: sets a machine's recipe without reach.
-    CheatSetRecipe { position: MapPosition, recipe: RecipeId },
+    CheatSetRecipe {
+        position: MapPosition,
+        recipe: RecipeId,
+    },
 }
 
 /// Inputs from one player for one tick.

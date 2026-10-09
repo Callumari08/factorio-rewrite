@@ -774,6 +774,37 @@ mod cursor {
         assert_eq!(hand(&sim), None);
     }
 
+    fn chest_slot(sim: &Simulation, id: EntityId, i: usize) -> u32 {
+        match &sim.entity(id).unwrap().state {
+            EntityState::Container(inv) => inv.slot(i).map_or(0, |s| s.count),
+            _ => 0,
+        }
+    }
+
+    // The character's inventory sorts itself (as with the game's default setting), so
+    // spreading shows in a chest.
+    #[test]
+    fn left_drag_spreads_the_stack_evenly() {
+        let d = game!();
+        let mut sim = flat_world(d);
+        give(&mut sim, "iron-plate", 100);
+        let chest = place(&mut sim, "iron-chest", 2, 0, Direction::NORTH);
+        input(&mut sim, InputAction::OpenEntity(Some(MapPosition::tile_center(TilePosition::new(2, 0)))));
+        let s = slot_of(&sim, "iron-plate");
+        click(&mut sim, SlotRef::Character(s), MouseButton::Left, false, false);
+        let slot = |i| SlotRef::Opened(EntityInventory::Main, i);
+        input(&mut sim, InputAction::SpreadCursor { slots: vec![slot(0)] });
+        assert_eq!(chest_slot(&sim, chest, 0), 100);
+        assert_eq!(cursor(&sim), None);
+        input(&mut sim, InputAction::SpreadCursor { slots: vec![slot(0), slot(5)] });
+        assert_eq!((chest_slot(&sim, chest, 0), chest_slot(&sim, chest, 5)), (50, 50));
+        input(&mut sim, InputAction::SpreadCursor { slots: vec![slot(0), slot(5), slot(9)] });
+        let counts = (chest_slot(&sim, chest, 0), chest_slot(&sim, chest, 5), chest_slot(&sim, chest, 9));
+        assert_eq!(counts, (34, 33, 33));
+        input(&mut sim, InputAction::EndSpread);
+        assert_eq!(container_count(&sim, chest, "iron-plate"), 100);
+    }
+
     #[test]
     fn right_click_takes_half_and_places_one() {
         let d = game!();

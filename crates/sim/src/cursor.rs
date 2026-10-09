@@ -294,3 +294,104 @@ pub(crate) fn sync_hand(sim: &mut Simulation, player: u16) {
         c.inventory.set_reserved(None);
     }
 }
+
+/// A drag-spread in progress: what the cursor held when it began, and what each slot
+/// held before items were spread into it.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Spread {
+    pub stack: ItemStack,
+    pub before: Vec<(SlotRef, Option<ItemStack>)>,
+}
+
+/// Reads a slot (character or opened entity): `None` when there is no such slot.
+pub fn read_slot(sim: &Simulation, player: u16, slot: SlotRef) -> Option<Option<ItemStack>> {
+    match slot {
+        SlotRef::Character(i) => {
+            let inv = &sim.players.get(&player)?.character.as_ref()?.inventory;
+            ((i as usize) < inv.len()).then(|| inv.slot(i as usize))
+        }
+        SlotRef::Opened(which, i) => {
+            let id = sim.players.get(&player)?.opened?;
+            let mut probe = sim.entity(id)?.state.clone();
+            let inv = entity_inventory(&mut probe, which)?;
+            ((i as usize) < inv.len()).then(|| inv.slot(i as usize))
+        }
+    }
+}
+
+fn write_slot(sim: &mut Simulation, player: u16, slot: SlotRef, stack: Option<ItemStack>) {
+    match slot {
+        SlotRef::Character(i) => {
+            if let Some(inv) = character_inventory(sim, player) {
+                inv.set_slot(i as usize, stack);
+            }
+        }
+        SlotRef::Opened(which, i) => {
+            let Some(id) = sim.players.get(&player).and_then(|p| p.opened) else { return };
+            if let Some(e) = sim.entities.get_mut(&id)
+                && let Some(inv) = entity_inventory(&mut e.state, which)
+            {
+                inv.set_slot(i as usize, stack);
+            }
+        }
+    }
+}
+
+/// Spreads the stack the cursor held when the drag began evenly over `slots` (those
+/// that are empty or hold the same item, and accept it), as the game's left drag. What
+/// does not fit stays in the cursor.
+pub(crate) fn spread(sim: &mut Simulation, player: u16, slots: Vec<SlotRef>) {
+    let db = sim.db.clone();
+    let Some(c) = sim.players.get(&player).and_then(|p| p.character.as_ref()) else { return };
+    // Undo the previous step of this drag.
+    let state = match c.spread.clone() {
+        Some(s) => {
+            for (slot, before) in s.before.iter().rev() {
+                write_slot(sim, player, *slot, *before);
+            }
+            s
+        }
+        None => match c.cursor {
+            Some(stack) => Spread { stack, before: Vec::new() },
+            None => return,
+        },
+    };
+    let stack = state.stack;
+    let opened = sim.players.get(&player).and_then(|p| p.opened);
+    let stack_size = db.item(stack.item).stack_size;
+    // The slots that can take part.
+    let mut targets: Vec<(SlotRef, Option<ItemStack>)> = Vec::new();
+    for slot in slots {
+        if targets.iter().any(|(s, _)| *s == slot) {
+            continue;
+        }
+        let Some(contents) = read_slot(sim, player, slot) else { continue };
+        let accepts = match slot {
+            SlotRef::Character(_) => true,
+            SlotRef::Opened(which, i) => {
+                opened.is_some_and(|id| slot_accepts(&db, sim, id, which, i as usize, stack.item))
+            }
+        };
+        if accepts && contents.is_none_or(|s| s.item == stack.item && s.count < stack_size) {
+            targets.push((slot, contents));
+        }
+    }
+    let mut left = stack.count;
+    let n = targets.len() as u32;
+    for (k, (slot, contents)) in targets.iter().enumerate() {
+        if n == 0 {
+            break;
+        }
+        // Even shares, the remainder to the first slots.
+        let share = stack.count / n + u32::from((k as u32) < stack.count % n);
+        let have = contents.map_or(0, |s| s.count);
+        let put = share.min(stack_size - have).min(left);
+        if put > 0 {
+            write_slot(sim, player, *slot, Some(ItemStack::new(stack.item, have + put)));
+            left -= put;
+        }
+    }
+    let c = sim.players.get_mut(&player).unwrap().character.as_mut().unwrap();
+    c.cursor = (left > 0).then(|| ItemStack::new(stack.item, left));
+    c.spread = Some(Spread { stack, before: targets });
+}

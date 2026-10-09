@@ -31,7 +31,7 @@ impl Plugin for UiPlugin {
         app.add_plugins(FrameTimeDiagnosticsPlugin::default())
             .add_systems(Startup, (load_names, setup, research::setup, hud::setup).chain())
             .add_systems(PostUpdate, font_weights.before(bevy::ui::UiSystems::Prepare))
-            .add_systems(Update, mining_bar)
+            .add_systems(Update, (mining_bar, drag_spread.after(clicks)))
             .add_systems(
                 Update,
                 (
@@ -180,6 +180,8 @@ enum Tip {
 #[derive(Resource, Default)]
 struct Local_ {
     tab: usize,
+    /// Slots swept by the current drag with the cursor stack.
+    drag: Vec<SlotRef>,
     choosing_recipe: bool,
 }
 
@@ -449,6 +451,18 @@ fn clicks(
     let player = sim.0.player(LOCAL_PLAYER);
     let held = character(&sim).and_then(|c| c.cursor).map(|c| c.item);
     match (target.clone(), button) {
+        // Holding a stack, a left press on a free (or same-item) slot starts a drag-spread
+        // (see `drag_spread`); everything else is an ordinary click.
+        (UiButton::Slot(slot), SimButton::Left)
+            if !shift && !ctrl && held.is_some() && slot_takes(&sim, slot, held.unwrap()) =>
+        {
+            local.drag = vec![slot];
+            pending.push(InputAction::SpreadCursor { slots: vec![slot] });
+        }
+        (UiButton::Slot(slot), SimButton::Right) if !shift && !ctrl && held.is_some() => {
+            local.drag = vec![slot];
+            pending.push(InputAction::ClickSlot { slot, button: SimButton::Right, shift, ctrl });
+        }
         (UiButton::Slot(slot), b) => pending.push(InputAction::ClickSlot { slot, button: b, shift, ctrl }),
         (UiButton::Craft(recipe), SimButton::Left) => {
             pending.push(InputAction::Craft { recipe, count: if shift { u32::MAX } else { 1 } })
@@ -1075,6 +1089,46 @@ fn font_weights(fonts: Res<Fonts>, mut q: Query<&mut TextFont, Changed<TextFont>
         if f.weight != w {
             f.weight = w;
         }
+    }
+}
+
+/// Whether a slot is free for, or already holds, `item` (where a left drag can put it).
+fn slot_takes(sim: &Sim, slot: SlotRef, item: ItemId) -> bool {
+    factorio_sim::cursor::read_slot(&sim.0, LOCAL_PLAYER, slot).is_some_and(|c| c.is_none_or(|s| s.item == item))
+}
+
+/// Dragging with the cursor stack, as in the game: with the left button held, the stack
+/// is spread evenly over every slot swept; with the right, one item goes into each.
+fn drag_spread(
+    mouse: Res<ButtonInput<MouseButton>>,
+    q: Query<(&Interaction, &UiButton)>,
+    mut local: ResMut<Local_>,
+    mut pending: ResMut<PendingInputs>,
+) {
+    if local.drag.is_empty() {
+        return;
+    }
+    let left = mouse.pressed(MouseButton::Left);
+    let right = mouse.pressed(MouseButton::Right);
+    if !left && !right {
+        local.drag.clear();
+        pending.push(InputAction::EndSpread);
+        return;
+    }
+    let hovered = q.iter().find_map(|(i, b)| match (i, b) {
+        (Interaction::None, _) => None,
+        (_, UiButton::Slot(s)) => Some(*s),
+        _ => None,
+    });
+    let Some(slot) = hovered else { return };
+    if local.drag.contains(&slot) {
+        return;
+    }
+    local.drag.push(slot);
+    if left {
+        pending.push(InputAction::SpreadCursor { slots: local.drag.clone() });
+    } else {
+        pending.push(InputAction::ClickSlot { slot, button: SimButton::Right, shift: false, ctrl: false });
     }
 }
 

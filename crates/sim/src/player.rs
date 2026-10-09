@@ -61,6 +61,8 @@ pub struct Character {
     pub craft_progress: Fixed,
     /// The stack held on the mouse cursor.
     pub cursor: Option<ItemStack>,
+    /// A drag-spread in progress (see `InputAction::SpreadCursor`).
+    pub spread: Option<crate::cursor::Spread>,
 }
 
 struct CharacterStats {
@@ -128,6 +130,7 @@ impl Character {
             queue: Vec::new(),
             craft_progress: Fixed::ZERO,
             cursor: None,
+            spread: None,
         }
     }
 
@@ -178,6 +181,12 @@ pub(crate) fn character_fits(sim: &Simulation, proto: EntityProtoId, at: MapPosi
 
 pub(crate) fn apply_input(sim: &mut Simulation, player: u16, action: &InputAction) {
     let db = sim.db.clone();
+    // Anything but the drag itself ends a drag-spread.
+    if !matches!(action, InputAction::SpreadCursor { .. })
+        && let Some(c) = sim.players.get_mut(&player).and_then(|p| p.character.as_mut())
+    {
+        c.spread = None;
+    }
     let Some(c) = sim.players.get(&player).and_then(|p| p.character.as_ref()) else { return };
     let st = stats(sim, c.proto);
     let me = c.position();
@@ -294,6 +303,8 @@ pub(crate) fn apply_input(sim: &mut Simulation, player: u16, action: &InputActio
             crate::cursor::click_slot(sim, player, slot, button, shift, ctrl);
         }
         InputAction::ClearCursor => crate::cursor::clear_cursor(sim, player),
+        InputAction::SpreadCursor { ref slots } => crate::cursor::spread(sim, player, slots.clone()),
+        InputAction::EndSpread => character_mut(sim, player).spread = None,
         InputAction::CheatAllItems => cheat_all_items(sim, player),
         InputAction::SetCheatMode(on) => sim.players.get_mut(&player).unwrap().cheat_mode = on,
         InputAction::PickItem(item) => crate::cursor::pick_item(sim, player, item),
