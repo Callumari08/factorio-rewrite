@@ -1028,7 +1028,13 @@ fn quickbar(
                     l.button.clone(),
                     Button,
                 ))
-                .with_children(|b| ctx.text(b, (row + 1).to_string(), 14.0, Color::BLACK));
+                .with_children(|b| {
+                    b.spawn((
+                        Text::new((row + 1).to_string()),
+                        TextFont { font: ctx.fonts.bold.clone(), font_size: 14.0, ..default() },
+                        TextColor(Color::BLACK),
+                    ));
+                });
             }
         });
         r.spawn(Node { flex_direction: FlexDirection::Column, ..default() }).with_children(|r| {
