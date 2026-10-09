@@ -22,7 +22,7 @@ impl Plugin for SettingsPlugin {
 
 /// Frame width, row height and slider length, as measured from the game.
 const WIDTH: f32 = 555.0;
-const ROW_H: f32 = 40.0;
+const ROW_H: f32 = 39.0;
 const SLIDER_W: f32 = 160.0;
 
 #[derive(Component)]
@@ -60,6 +60,8 @@ fn setup(
         .0
         .resolve_path("__core__/graphics/icons/mip/dropdown.png")
         .map(|p| assets.load(crate::sprites::asset_path(&data, &p)));
+    let d2 = data.0.clone();
+    let search = sprites.get(&assets, &data, "utility:search", || factorio_data::sprite::utility_sprite(&d2, "search"));
     let reset = sprites.get(&assets, &data, "utility:reset", || factorio_data::sprite::utility_sprite(&d, "reset"));
     let font = |size: f32| TextFont { font: fonts.regular.clone(), font_size: size, ..default() };
     let bold = |size: f32| TextFont { font: fonts.bold.clone(), font_size: size, ..default() };
@@ -75,7 +77,7 @@ fn setup(
                 width: Val::Px(WIDTH),
                 flex_direction: FlexDirection::Column,
                 padding: UiRect { left: Val::Px(8.0), right: Val::Px(8.0), top: Val::Px(4.0), bottom: Val::Px(8.0) },
-                row_gap: Val::Px(8.0),
+                row_gap: Val::Px(4.0),
                 display: Display::None,
                 ..default()
             },
@@ -88,7 +90,7 @@ fn setup(
                 flex_direction: FlexDirection::Row,
                 align_items: AlignItems::Center,
                 column_gap: Val::Px(8.0),
-                height: Val::Px(32.0),
+                height: Val::Px(30.0),
                 ..default()
             })
             .with_children(|h| {
@@ -106,6 +108,38 @@ fn setup(
                         ..default()
                     });
                 }
+                // The search button, as in the game (settings search is not implemented).
+                h.spawn((
+                    Node {
+                        width: Val::Px(24.0),
+                        height: Val::Px(24.0),
+                        justify_content: JustifyContent::Center,
+                        align_items: AlignItems::Center,
+                        ..default()
+                    },
+                    node_image(&l.frame_button.default),
+                    l.frame_button.clone(),
+                    Button,
+                ))
+                .with_children(|b| {
+                    if let Some(sr) = &search {
+                        let s = &sr.sprite;
+                        b.spawn((
+                            ImageNode {
+                                image: sr.image.clone(),
+                                rect: Some(Rect::new(
+                                    s.x as f32,
+                                    s.y as f32,
+                                    (s.x + s.width) as f32,
+                                    (s.y + s.height) as f32,
+                                )),
+                                ..default()
+                            },
+                            Node { width: Val::Px(16.0), height: Val::Px(16.0), ..default() },
+                            Pickable::IGNORE,
+                        ));
+                    }
+                });
             });
             // Subheader with the reset button.
             p.spawn((
@@ -113,7 +147,7 @@ fn setup(
                     flex_direction: FlexDirection::Row,
                     justify_content: JustifyContent::FlexEnd,
                     align_items: AlignItems::Center,
-                    height: Val::Px(36.0),
+                    height: Val::Px(38.0),
                     padding: UiRect::right(Val::Px(4.0)),
                     ..default()
                 },
@@ -124,8 +158,8 @@ fn setup(
                     Action::Reset,
                     Button,
                     Node {
-                        width: Val::Px(28.0),
-                        height: Val::Px(28.0),
+                        width: Val::Px(24.0),
+                        height: Val::Px(24.0),
                         justify_content: JustifyContent::Center,
                         align_items: AlignItems::Center,
                         ..default()
@@ -147,7 +181,7 @@ fn setup(
                                 )),
                                 ..default()
                             },
-                            Node { width: Val::Px(24.0), height: Val::Px(24.0), ..default() },
+                            Node { width: Val::Px(20.0), height: Val::Px(20.0), ..default() },
                             Pickable::IGNORE,
                         ));
                     }
@@ -158,12 +192,13 @@ fn setup(
                 Node {
                     flex_direction: FlexDirection::Column,
                     padding: UiRect::all(Val::Px(4.0)),
-                    row_gap: Val::Px(2.0),
+                    row_gap: Val::Px(1.0),
                     ..default()
                 },
                 BackgroundColor(Color::srgb(0.17, 0.17, 0.17)),
             ))
             .with_children(|rows| {
+                crate::gui_skin::backdrop(rows, &l.deep_in_shallow);
                 let row_node = || {
                     (
                         Node {
@@ -185,7 +220,7 @@ fn setup(
                     rows.spawn(row_node()).with_children(|r| {
                         r.spawn((
                             Text::new(label),
-                            font(15.0),
+                            font(14.0),
                             TextColor(Color::WHITE),
                             Node { flex_grow: 1.0, ..default() },
                         ));
@@ -237,7 +272,7 @@ fn setup(
                         });
                         r.spawn((
                             Text::new(*label),
-                            font(15.0),
+                            font(14.0),
                             TextColor(Color::WHITE),
                             Node { flex_grow: 1.0, ..default() },
                         ));
@@ -314,16 +349,30 @@ fn setup(
                     });
                 }
             });
-            // Back and Confirm.
+            // Back and Confirm, 15 px under the rows (measured).
             p.spawn(Node {
                 flex_direction: FlexDirection::Row,
                 height: Val::Px(32.0),
                 column_gap: Val::Px(8.0),
+                margin: UiRect::top(Val::Px(11.0)),
                 ..default()
             })
             .with_children(|b| {
                 dialog_button(b, &fonts, "Back", Action::Back, false);
-                b.spawn(Node { flex_grow: 1.0, ..default() });
+                // The striped draggable filler between the buttons, as in the game.
+                let mut filler = b.spawn(Node { flex_grow: 1.0, height: Val::Px(32.0), ..default() });
+                if let Some((image, rect)) = &l.header_filler {
+                    filler.insert(ImageNode {
+                        image: image.clone(),
+                        rect: Some(*rect),
+                        image_mode: bevy::ui::widget::NodeImageMode::Tiled {
+                            tile_x: true,
+                            tile_y: true,
+                            stretch_value: l.scale,
+                        },
+                        ..default()
+                    });
+                }
                 dialog_button(b, &fonts, "Confirm", Action::Confirm, true);
             });
         });
