@@ -11,11 +11,15 @@ use super::research::ResearchHudRoot;
 use super::*;
 
 /// Width of the character panel; the crafting queue starts right of it.
-pub(super) const CHARACTER_PANEL_W: f32 = SLOT_PX * 4.0 + 16.0;
+/// Measured from the game: 8 px padding, the portrait, a 10 px gap, three slots.
+pub(super) const CHARACTER_PANEL_W: f32 = 8.0 + SLOT_PX + 10.0 + SLOT_PX * 3.0 + 8.0;
 /// The minimap: pixels on screen, one tile per pixel.
-const MINIMAP_PX: u32 = 248;
+/// The minimap picture inside its 4 px deep frame, so the whole is the button rows'
+/// width (240).
+const MINIMAP_PX: u32 = 232;
 /// The side menu's width.
-pub(super) const SIDE_MENU_W: f32 = MINIMAP_PX as f32 + 16.0;
+/// Six side-menu buttons plus the frame's padding (measured: 258 px at 100 %).
+pub(super) const SIDE_MENU_W: f32 = SLOT_PX * 6.0 + 18.0;
 
 /// Every HUD panel (hidden under the technology screen).
 #[derive(Component)]
@@ -56,7 +60,7 @@ pub(super) fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
                 width: Val::Px(SIDE_MENU_W),
                 flex_direction: FlexDirection::Column,
                 row_gap: Val::Px(4.0),
-                padding: UiRect::all(Val::Px(4.0)),
+                padding: UiRect::all(Val::Px(9.0)),
                 ..default()
             },
             crate::gui_skin::node_image(&l.frame),
@@ -75,14 +79,17 @@ pub(super) fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
                 BackgroundColor(INNER),
             ));
             m.spawn((SideMenuButtons, Node { flex_direction: FlexDirection::Column, ..default() }));
-            m.spawn((
-                ImageNode::new(image),
-                Node { width: Val::Px(MINIMAP_PX as f32), height: Val::Px(MINIMAP_PX as f32), ..default() },
-            ));
+            m.spawn(Node { padding: UiRect::all(Val::Px(4.0)), ..default() }).with_children(|f| {
+                crate::gui_skin::backdrop(f, &l.deep_in_shallow);
+                f.spawn((
+                    ImageNode::new(image),
+                    Node { width: Val::Px(MINIMAP_PX as f32), height: Val::Px(MINIMAP_PX as f32), ..default() },
+                ));
+            });
             // The selected entity's info, under the minimap as in the game.
             let (mut info, image) = super::tips::tip_frame();
             info.display = Display::None;
-            info.margin = UiRect::horizontal(Val::Px(-4.0));
+            info.margin = UiRect::horizontal(Val::Px(-9.0));
             info.padding.left = Val::Px(0.0);
             info.padding.right = Val::Px(0.0);
             info.max_width = Val::Auto;
@@ -98,7 +105,8 @@ pub(super) fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
             bottom: Val::Px(0.0),
             left: Val::Px(0.0),
             width: Val::Px(CHARACTER_PANEL_W),
-            padding: UiRect::all(Val::Px(4.0)),
+            padding: UiRect::all(Val::Px(8.0)),
+            row_gap: Val::Px(3.0),
             flex_direction: FlexDirection::Column,
             ..default()
         },
@@ -235,7 +243,8 @@ pub(super) fn character_panel(
                             align_items: AlignItems::Center,
                             ..default()
                         },
-                        crate::gui_skin::node_image(&looks().slot.default),
+                        // The portrait is a light (button-style) slot.
+                        crate::gui_skin::node_image(&looks().button.default),
                         Tip::Text("Character".into()),
                         Interaction::default(),
                     ))
@@ -260,6 +269,7 @@ pub(super) fn character_panel(
                 } else {
                     ghost_slot(row, &mut ctx, "empty_armor_slot");
                 }
+                row.spawn(Node { width: Val::Px(10.0), ..default() });
                 for _ in 0..3 {
                     ghost_slot(row, &mut ctx, rest);
                 }
