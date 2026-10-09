@@ -76,7 +76,10 @@ const TEXT: Color = Color::srgb(0.9, 0.9, 0.9);
 const PROGRESS: Color = Color::srgb(0.38, 0.72, 0.29);
 const SLOT_PX: f32 = 40.0;
 /// The quickbar's width: row numbers, ten slots, padding.
-const QUICKBAR_W: f32 = SLOT_PX * 11.0 + 4.0 * 3.0;
+/// Measured from the game at 125 % (585 × 120 px): 8 px padding, the row buttons, a 7 px
+/// gap, ten slots with 4 px between the fifth and sixth.
+const QUICKBAR_W: f32 = 8.0 + SLOT_PX + 7.0 + SLOT_PX * 10.0 + 4.0 + 8.0;
+const QUICKBAR_H: f32 = SLOT_PX * 2.0 + 16.0;
 /// An `inside_shallow_frame_with_padding` panel around a 10-slot table.
 const PANEL_W: f32 = SLOT_PX * 10.0 + 24.0;
 /// The game's `entity_button_frame`: 10 slots wide, 4 slots (less spacing) high.
@@ -308,21 +311,24 @@ fn setup(mut commands: Commands, fonts: Res<Fonts>) {
             bottom: Val::Px(0.0),
             left: Val::Percent(50.0),
             margin: UiRect::left(Val::Px(-QUICKBAR_W / 2.0)),
+            width: Val::Px(QUICKBAR_W),
+            height: Val::Px(QUICKBAR_H),
             flex_direction: FlexDirection::Row,
-            column_gap: Val::Px(4.0),
-            padding: UiRect::all(Val::Px(4.0)),
+            column_gap: Val::Px(7.0),
+            padding: UiRect::all(Val::Px(8.0)),
             ..default()
         },
         crate::gui_skin::node_image(&looks().frame),
     ));
-    // The mining bar: a 13 px strip resting on the quickbar's top edge.
+    // The mining bar: a 13 px strip resting on the quickbar's top edge, the quickbar's
+    // width, black behind the orange fill (measured from the game).
     let l = looks();
     commands
         .spawn((
             MiningBar,
             Node {
                 position_type: PositionType::Absolute,
-                bottom: Val::Px(SLOT_PX * 2.0 + 8.0),
+                bottom: Val::Px(QUICKBAR_H),
                 left: Val::Percent(50.0),
                 margin: UiRect::left(Val::Px(-QUICKBAR_W / 2.0)),
                 width: Val::Px(QUICKBAR_W),
@@ -330,18 +336,13 @@ fn setup(mut commands: Commands, fonts: Res<Fonts>) {
                 display: Display::None,
                 ..default()
             },
-            ImageNode { image: l.health_bar_bg.image.clone(), rect: Some(l.health_bar_bg.rect), ..default() },
+            BackgroundColor(Color::BLACK),
             Pickable::IGNORE,
         ))
         .with_children(|b| {
             b.spawn((
                 LiveFill(Live::Mining),
-                Node {
-                    width: Val::Percent(0.0),
-                    height: Val::Px(11.0),
-                    margin: UiRect::top(Val::Px(1.0)),
-                    ..default()
-                },
+                Node { width: Val::Percent(0.0), height: Val::Px(13.0), ..default() },
                 ImageNode {
                     image: l.health_bar.image.clone(),
                     rect: Some(l.health_bar.rect),
@@ -1046,6 +1047,10 @@ fn quickbar(
                             (k + 1) % 10
                         ))));
                         let bg = if item.is_some() && counts[i] == 0 { SLOT_RED } else { INV };
+                        if k == 5 {
+                            // The game splits each row into two halves.
+                            rr.spawn(Node { width: Val::Px(4.0), ..default() });
+                        }
                         ctx.slot(rr, item, Some(counts[i]), bg, Some(UiButton::Quickbar(i)), tip);
                     }
                 });
