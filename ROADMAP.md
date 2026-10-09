@@ -72,7 +72,10 @@ Each step ends with a playtest. Feedback from it becomes a ".5" step before the 
      takes damage, "x" once destroyed, yellow for other alerts, with counts; also
      shown on the minimap) once combat exists.
    - Technology: [~] 2.0 tech screen (queue, card, list, tree; no drag/zoom/search yet).
-   - Menus: [ ] settings (sound and the rest of the options menu), [ ] map view (M).
+   - Menus: [x] sound settings, [ ] the rest of the options menu, [ ] map view (M).
+   - [ ] Pixel calibration pass: every widget measured against real-game screenshots
+     (not photos) at a known UI scale, fixing sizes, offsets and text placement, e.g.
+     the mining strip on the quickbar (Callum: not 1:1 yet).
 
 ## Next: the rest of step 3, in order
 5. **Inserters and poles.** Inserters reaching for moving belt items, stack bonuses, filter

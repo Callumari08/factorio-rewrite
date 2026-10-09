@@ -369,6 +369,9 @@ fn dialog_button(p: &mut ChildSpawnerCommands, fonts: &Fonts, label: &str, actio
                     Text::new(label),
                     TextFont { font: fonts.bold.clone(), font_size: 18.0, ..default() },
                     TextColor(Color::BLACK),
+                    // Titillium's line box sits its capitals low: lift them to the
+                    // button's centre (measured).
+                    Node { margin: UiRect::bottom(Val::Px(4.0)), ..default() },
                 ));
             });
             if green {
