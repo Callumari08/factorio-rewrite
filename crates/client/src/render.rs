@@ -168,7 +168,11 @@ pub(crate) fn entity_look(
         return single(entity_look_single(sim, data, sprites, assets, id));
     }
     let name = sim.0.prototypes().entity(e.proto).name.clone();
-    let di = dir_index(e.direction);
+    let di = if sim.0.prototypes().entity(e.proto).kind == "electric-pole" {
+        pole_orientation(sim, id)
+    } else {
+        dir_index(e.direction)
+    };
     let working = is_working(&e.state);
     let t = if working { sim.0.tick() } else { 0 };
     let key = format!("layers:{name}:{di}:{working}:{t}");
@@ -336,6 +340,7 @@ fn sync_entities(
             EntityState::Belt => false,
             _ => {
                 proto.kind != "pipe"
+                    && proto.kind != "electric-pole"
                     && !is_working(&e.state)
                     && m.key == format!("layers:{}:{}:false:0", proto.name, dir_index(e.direction))
             }
@@ -624,6 +629,28 @@ mod tests {
     }
 }
 
+/// Which of its four pictures a pole shows, as in the game: the one whose cross-arm best
+/// follows its wires (0 east-west, 1 rising to the right, 2 north-south, 3 falling),
+/// from the average of the wires' directions (each taken modulo a half turn).
+pub fn pole_orientation(sim: &Sim, id: EntityId) -> usize {
+    let Some(e) = sim.0.entity(id) else { return 0 };
+    let Some(list) = sim.0.power.wires.get(&id) else { return 0 };
+    let (mut cx, mut cy) = (0.0f32, 0.0f32);
+    for other in list {
+        let Some(o) = sim.0.entity(*other) else { continue };
+        // Screen directions: y up.
+        let d = Vec2::new((o.position.x - e.position.x) as f32, -(o.position.y - e.position.y) as f32);
+        let a = d.y.atan2(d.x) * 2.0;
+        cx += a.cos();
+        cy += a.sin();
+    }
+    if cx == 0.0 && cy == 0.0 {
+        return 0;
+    }
+    let angle = cy.atan2(cx).rem_euclid(std::f32::consts::TAU) / 2.0;
+    ((angle / std::f32::consts::FRAC_PI_4).round() as usize) % 4
+}
+
 /// Copper wires between poles, as in the game: its sagging-wire picture stretched between
 /// the two poles' copper connection points, with the shadow version between their shadow
 /// points.
@@ -661,7 +688,7 @@ fn draw_wires(
     let point = |id: EntityId, shadow: bool| -> Option<Vec2> {
         let e = sim.0.entity(id)?;
         let proto = db.entity(e.proto);
-        let cp = data.0.prototype(&proto.kind, &proto.name).get("connection_points").at(0);
+        let cp = data.0.prototype(&proto.kind, &proto.name).get("connection_points").at(pole_orientation(&sim, id));
         let v = cp.get(if shadow { "shadow" } else { "wire" }).get("copper");
         let (x, y) = (v.at(0).as_f64()? as f32, v.at(1).as_f64()? as f32);
         Some(map_to_world(e.position) + Vec2::new(x, -y) * TILE)

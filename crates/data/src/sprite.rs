@@ -693,13 +693,18 @@ pub fn entity_layers(data: &GameData, name: &str, dir: usize, t: u64, working: b
         let animated = layer.get("frame_count").as_i64().unwrap_or(1) > 1;
         let (frame, row) = if four_way {
             (dir as u32, 0)
+        } else if direction_count >= 4 && !animated && layer.get("frame_count").is_nil() {
+            // A rotated sprite (no animation): the directions follow each other along the
+            // sheet's lines like frames (electric poles' four pictures).
+            ((dir as i64 * direction_count / 4) as u32, 0)
         } else {
             let frame = if animated && working { frame_at(layer, tf) } else { 0 };
             let row = if direction_count >= 4 { (dir as i64 * direction_count / 4) as u32 } else { 0 };
             (frame, row)
         };
         // Animations with a direction_count lay out each direction as its own row block.
-        let frames_per_row_block = if direction_count >= 4 && !four_way {
+        let rotated_sprite = direction_count >= 4 && layer.get("frame_count").is_nil();
+        let frames_per_row_block = if direction_count >= 4 && !four_way && !rotated_sprite {
             let n = layer.get("frame_count").as_i64().unwrap_or(1).max(1) as u32;
             let line = layer.get("line_length").as_i64().map(|l| l as u32).unwrap_or(n).max(1);
             n.div_ceil(line)
