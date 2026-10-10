@@ -299,6 +299,14 @@ pub fn build_prototype_db(data: &GameData) -> Result<PrototypeDb> {
             fuel,
             sort_index: sort_index[index],
             durability: (kind == "tool").then(|| fx_or(p.get("durability"), 1.0)),
+            only_in_cursor: p.get("flags").as_array().iter().any(|f| f.as_str() == Some("only-in-cursor")),
+            // The wire items the engine defines.
+            wire: match name.as_str() {
+                "copper-wire" => Some(factorio_sim::proto::WireKind::Copper),
+                "red-wire" => Some(factorio_sim::proto::WireKind::Red),
+                "green-wire" => Some(factorio_sim::proto::WireKind::Green),
+                _ => None,
+            },
         });
     }
 

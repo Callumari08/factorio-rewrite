@@ -305,6 +305,31 @@ pub(crate) fn apply_input(sim: &mut Simulation, player: u16, action: &InputActio
         InputAction::ClearCursor => crate::cursor::clear_cursor(sim, player),
         InputAction::SpreadCursor { ref slots } => crate::cursor::spread(sim, player, slots.clone()),
         InputAction::EndSpread => character_mut(sim, player).spread = None,
+        InputAction::SpawnItem(item) => {
+            if db.item(item).only_in_cursor {
+                crate::cursor::clear_cursor(sim, player);
+                character_mut(sim, player).cursor = Some(ItemStack::new(item, 1));
+            }
+        }
+        InputAction::WirePoles { a, b } => {
+            let wire = c.cursor.and_then(|s| db.item(s.item).wire);
+            if wire == Some(crate::proto::WireKind::Copper)
+                && let (Some(pa), Some(pb)) = (sim.entity_at(a), sim.entity_at(b))
+                && pa != pb
+                && in_reach(sim, me, pb, st.reach_distance)
+            {
+                crate::power::toggle_wire(sim, pa, pb);
+            }
+        }
+        InputAction::ClearPoleWires(p) => {
+            let wire = c.cursor.and_then(|s| db.item(s.item).wire);
+            if wire == Some(crate::proto::WireKind::Copper)
+                && let Some(id) = sim.entity_at(p)
+                && in_reach(sim, me, id, st.reach_distance)
+            {
+                crate::power::disconnect_pole(sim, id);
+            }
+        }
         InputAction::SetSlotFilter { slot, item } => {
             character_mut(sim, player).inventory.set_filter(slot as usize, item);
         }

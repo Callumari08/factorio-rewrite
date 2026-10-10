@@ -24,7 +24,7 @@ impl Plugin for RenderPlugin {
             .init_resource::<WireMirror>()
             .add_systems(Startup, spawn_character)
             .add_systems(Update, (sync_entities, draw_items, draw_character, draw_ghost, follow_camera).chain())
-            .add_systems(Update, draw_wires);
+            .add_systems(Update, (draw_wires, wire_preview));
     }
 }
 
@@ -723,4 +723,20 @@ fn draw_wires(
             }
         }
     }
+}
+
+/// While laying a wire: a copper line from the pole clicked first to the mouse.
+fn wire_preview(
+    sim: Res<Sim>,
+    ui: Res<crate::controls::UiState>,
+    mouse: Res<crate::controls::MouseWorld>,
+    mut gizmos: Gizmos,
+) {
+    let (Some(start), Some(at)) = (ui.wire_start, mouse.0) else { return };
+    if sim.0.entity_at(start).is_none() {
+        return;
+    }
+    // From about the height of a pole's wire point.
+    let from = map_to_world(start) + Vec2::new(0.0, 2.5 * TILE);
+    gizmos.line_2d(from, map_to_world(at), Color::srgb_u8(214, 132, 32));
 }

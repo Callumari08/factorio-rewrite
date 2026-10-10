@@ -637,6 +637,28 @@ fn poles_wire_to_the_closest_without_triangles() {
 }
 
 #[test]
+fn copper_wire_wires_and_unwires_poles_by_hand() {
+    let d = game!();
+    let mut sim = flat_world(d);
+    let a = place(&mut sim, "small-electric-pole", 2, 2, Direction::NORTH);
+    let b = place(&mut sim, "small-electric-pole", 5, 2, Direction::NORTH);
+    let at = |x, y| MapPosition::tile_center(TilePosition::new(x, y));
+    assert_eq!(sim.power.wires.get(&a), Some(&vec![b]));
+    let wire = item(&sim, "copper-wire");
+    input(&mut sim, InputAction::SpawnItem(wire));
+    // Clicking the two poles removes their wire, clicking again puts it back.
+    input(&mut sim, InputAction::WirePoles { a: at(2, 2), b: at(5, 2) });
+    assert!(sim.power.wires.get(&a).is_none());
+    input(&mut sim, InputAction::WirePoles { a: at(2, 2), b: at(5, 2) });
+    assert_eq!(sim.power.wires.get(&a), Some(&vec![b]));
+    input(&mut sim, InputAction::ClearPoleWires(at(5, 2)));
+    assert!(sim.power.wires.is_empty());
+    // The wire never lands in the inventory.
+    input(&mut sim, InputAction::ClearCursor);
+    assert_eq!(inventory_count(&sim, "copper-wire"), 0);
+}
+
+#[test]
 fn poles_take_at_most_five_wires() {
     let d = game!();
     let mut sim = flat_world(d);

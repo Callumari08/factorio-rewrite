@@ -345,7 +345,8 @@ pub(super) fn shortcut_bar(
                             ..default()
                         },
                         node,
-                        Interaction::default(),
+                        Button,
+                        UiButton::Shortcut(name.clone(), unlocked),
                         Tip::Text(name.replace('-', " ")),
                     ))
                     .with_children(|b| {

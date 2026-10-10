@@ -81,6 +81,11 @@ pub(crate) fn click_slot(
     ctrl: bool,
 ) {
     let db = sim.db.clone();
+    // Cursor-only items never go into slots.
+    let cur_item = sim.players.get(&player).and_then(|p| p.character.as_ref()).and_then(|c| c.cursor);
+    if cur_item.is_some_and(|s| db.item(s.item).only_in_cursor) {
+        return;
+    }
     let opened = sim.players.get(&player).and_then(|p| p.opened).filter(|id| sim.entity(*id).is_some());
     if shift || ctrl {
         transfer(sim, player, opened, slot, ctrl);
@@ -185,6 +190,10 @@ pub(crate) fn clear_cursor(sim: &mut Simulation, player: u16) {
     let db = sim.db.clone();
     let Some(c) = sim.players.get_mut(&player).and_then(|p| p.character.as_mut()) else { return };
     let Some(stack) = c.cursor.take() else { return };
+    // Cursor-only items (copper wire) simply go away.
+    if db.item(stack.item).only_in_cursor {
+        return;
+    }
     // Back to the hand's slot first, as in the game.
     let mut n = 0;
     if let Some(r) = c.inventory.reserved().filter(|r| c.inventory.slot(*r).is_none()) {
@@ -352,8 +361,8 @@ pub(crate) fn spread(sim: &mut Simulation, player: u16, slots: Vec<SlotRef>) {
             s
         }
         None => match c.cursor {
-            Some(stack) => Spread { stack, before: Vec::new() },
-            None => return,
+            Some(stack) if !sim.db.item(stack.item).only_in_cursor => Spread { stack, before: Vec::new() },
+            _ => return,
         },
     };
     let stack = state.stack;

@@ -62,6 +62,18 @@ pub struct ItemProto {
     pub sort_index: u32,
     /// Durability of `tool` items (science packs); a lab uses it up while researching.
     pub durability: Option<Fixed>,
+    /// Only ever held in the cursor (the `only-in-cursor` flag); taken from nowhere by
+    /// a spawn-item shortcut and gone when the cursor is cleared.
+    pub only_in_cursor: bool,
+    /// The wire this item lays between poles (copper, red or green), if it is a wire.
+    pub wire: Option<WireKind>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum WireKind {
+    Copper,
+    Red,
+    Green,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

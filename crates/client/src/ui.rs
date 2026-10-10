@@ -176,6 +176,8 @@ enum UiButton {
     CloseWindow,
     TechSearch,
     ContainerLimit,
+    /// A shortcut bar button: the shortcut's name, and whether it is unlocked.
+    Shortcut(String, bool),
     InserterUseFilters,
     InserterBlacklist,
     InserterFilter(u8),
@@ -443,6 +445,7 @@ fn pointer_over_ui(q: Query<&Interaction>, mut ui: ResMut<UiState>) {
 
 /// Mouse clicks on UI elements, with Factorio's button and modifier meanings.
 fn clicks(
+    data: Res<Data>,
     q: Query<(&Interaction, &UiButton)>,
     mouse: Res<ButtonInput<MouseButton>>,
     keys: Res<ButtonInput<KeyCode>>,
@@ -490,6 +493,16 @@ fn clicks(
             pending.push(InputAction::SetContainerLimit(Some(i)));
         }
         (UiButton::ContainerLimit, SimButton::Left) => local.limit_mode = !local.limit_mode,
+        (UiButton::Shortcut(name, true), SimButton::Left) => {
+            // Spawn-item shortcuts put their item (copper wire, planners) in the cursor.
+            let raw = data.0.prototype("shortcut", &name);
+            if raw.get("action").as_str() == Some("spawn-item")
+                && let Some(item) = raw.get("item_to_spawn").as_str().and_then(|n| sim.0.prototypes().item_id(n))
+            {
+                pending.push(InputAction::SpawnItem(item));
+            }
+        }
+        (UiButton::Shortcut(..), _) => {}
         (UiButton::InserterUseFilters | UiButton::InserterBlacklist, _) => {
             if let Some(EntityState::Inserter(i)) = opened(&sim).and_then(|id| sim.0.entity(id)).map(|e| &e.state) {
                 let (use_filters, blacklist) = match target {

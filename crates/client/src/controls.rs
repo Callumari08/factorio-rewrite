@@ -38,12 +38,15 @@ pub struct UiState {
     pub pointer_over_ui: bool,
     /// True while a search box takes the keyboard: game keys are ignored.
     pub typing: bool,
+    /// With a wire in the cursor: the pole the wire is being laid from.
+    pub wire_start: Option<MapPosition>,
     pub status: String,
 }
 
 #[derive(Default)]
 struct ControlState {
     walking: Option<Direction>,
+
     mining_tile: Option<TilePosition>,
     last_build_tile: Option<TilePosition>,
 }
@@ -352,6 +355,34 @@ fn mouse(
             pending.push(InputAction::FastTransfer { position: at, half: false });
         } else if buttons.just_pressed(MouseButton::Right) {
             pending.push(InputAction::FastTransfer { position: at, half: true });
+        }
+        return;
+    }
+
+    // A wire in the cursor: click a pole, then another, to wire them (or unwire them if
+    // already wired); Shift+click removes all of a pole's wires.
+    let wire = held.is_some_and(|i| sim.0.prototypes().item(i).wire.is_some());
+    if !wire {
+        ui.wire_start = None;
+    }
+    let is_pole = |p: MapPosition| {
+        sim.0.entity_at(p).is_some_and(|id| {
+            matches!(sim.0.entity(id).map(|e| &e.state), Some(factorio_sim::world::EntityState::Pole))
+        })
+    };
+    if wire && !over_ui && buttons.just_pressed(MouseButton::Left) {
+        let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
+        if is_pole(at) {
+            if shift {
+                pending.push(InputAction::ClearPoleWires(at));
+                ui.wire_start = None;
+            } else if let Some(start) = ui.wire_start.filter(|s| sim.0.entity_at(*s) != sim.0.entity_at(at)) {
+                pending.push(InputAction::WirePoles { a: start, b: at });
+                // Wiring continues from the second pole, as in the game.
+                ui.wire_start = Some(at);
+            } else {
+                ui.wire_start = Some(at);
+            }
         }
         return;
     }

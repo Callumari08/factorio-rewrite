@@ -112,6 +112,17 @@ pub enum InputAction {
     },
     /// Sets (or clears) the opened inserter's stack size override.
     SetInserterStackOverride(Option<u32>),
+    /// Puts a spawnable item (copper wire and the like) into the empty cursor, as the
+    /// shortcut bar's spawn-item buttons do.
+    SpawnItem(ItemId),
+    /// With a wire in the cursor: wires the poles at `a` and `b` together, or removes the
+    /// wire if they already are.
+    WirePoles {
+        a: MapPosition,
+        b: MapPosition,
+    },
+    /// Removes all copper wires of the pole at the position (Shift+click with copper wire).
+    ClearPoleWires(MapPosition),
     /// Puts the cursor stack back into the inventory (Q).
     ClearCursor,
     /// Takes a stack of the item from the inventory into the cursor (quickbar keys, pipette).

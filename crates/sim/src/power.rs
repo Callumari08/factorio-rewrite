@@ -653,3 +653,33 @@ pub(crate) fn disconnect_pole(sim: &mut Simulation, id: EntityId) {
     }
     sim.power.mark_dirty();
 }
+
+/// Wires two poles by hand, or removes the wire between them if there is one. A new
+/// wire needs both poles in each other's wire reach and under [`MAX_WIRES`] wires.
+pub(crate) fn toggle_wire(sim: &mut Simulation, a: EntityId, b: EntityId) -> bool {
+    let db = sim.db.clone();
+    let reach = |id: EntityId| match sim.entities.get(&id).map(|e| &db.entity(e.proto).data) {
+        Some(EntityData::ElectricPole { maximum_wire_distance, .. }) => Some(*maximum_wire_distance),
+        _ => None,
+    };
+    let (Some(ra), Some(rb)) = (reach(a), reach(b)) else { return false };
+    if sim.power.wires.get(&a).is_some_and(|l| l.contains(&b)) {
+        for (x, y) in [(a, b), (b, a)] {
+            if let Some(l) = sim.power.wires.get_mut(&x) {
+                l.retain(|w| *w != y);
+                if l.is_empty() {
+                    sim.power.wires.remove(&x);
+                }
+            }
+        }
+        sim.power.mark_dirty();
+        return true;
+    }
+    let r = ra.min(rb).mul_int(SUBTILES_PER_TILE as i64).floor_int();
+    let full = |id: EntityId| sim.power.wires.get(&id).is_some_and(|l| l.len() >= MAX_WIRES);
+    if sim.entities[&a].position.distance_sq(sim.entities[&b].position) > r * r || full(a) || full(b) {
+        return false;
+    }
+    add_wire(&mut sim.power, a, b);
+    true
+}
