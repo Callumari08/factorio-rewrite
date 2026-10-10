@@ -261,6 +261,16 @@ pub enum EntityData {
         energy_per_movement: Energy,
         energy_per_rotation: Energy,
         energy_source: EnergySource,
+        /// Uses the bulk inserter capacity bonus instead of the inserter stack size bonus.
+        bulk: bool,
+        /// Hand size above 1 without research.
+        stack_size_bonus: u32,
+        /// Whether research bonuses raise the hand size.
+        uses_stack_size_bonus: bool,
+        /// How many item filters the inserter can have.
+        filter_count: u8,
+        /// Waits for a full hand before leaving the pickup position.
+        wait_for_full_hand: bool,
     },
     TransportBelt {
         /// Belt positions (1/256 tile) per tick.

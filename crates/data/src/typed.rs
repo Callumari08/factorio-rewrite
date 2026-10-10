@@ -609,6 +609,11 @@ fn entity_proto(names: &Names, kind: &str, name: &str, p: &RawValue) -> std::res
             energy_per_movement: energy(p.get("energy_per_movement")).unwrap_or(Fixed::ZERO),
             energy_per_rotation: energy(p.get("energy_per_rotation")).unwrap_or(Fixed::ZERO),
             energy_source: names.energy_source(p.get("energy_source"), Fixed::ZERO),
+            bulk: p.get("bulk").as_bool().unwrap_or(false),
+            stack_size_bonus: p.get("stack_size_bonus").as_i64().unwrap_or(0) as u32,
+            uses_stack_size_bonus: p.get("uses_inserter_stack_size_bonus").as_bool().unwrap_or(true),
+            filter_count: p.get("filter_count").as_i64().unwrap_or(0).clamp(0, 5) as u8,
+            wait_for_full_hand: p.get("wait_for_full_hand").as_bool().unwrap_or(false),
         },
         "transport-belt" => EntityData::TransportBelt { speed: subtiles(p.get("speed").as_f64().unwrap_or(0.0)) },
         "underground-belt" => EntityData::UndergroundBelt {

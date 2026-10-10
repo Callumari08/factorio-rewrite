@@ -33,7 +33,13 @@ impl Plugin for UiPlugin {
             .add_systems(PostUpdate, font_weights.before(bevy::ui::UiSystems::Prepare))
             .add_systems(
                 Update,
-                (mining_bar, drag_spread.after(clicks), research::tree_view, research::search_typing.before(clicks)),
+                (
+                    mining_bar,
+                    override_slider,
+                    drag_spread.after(clicks),
+                    research::tree_view,
+                    research::search_typing.before(clicks),
+                ),
             )
             .add_systems(
                 Update,
@@ -170,6 +176,12 @@ enum UiButton {
     CloseWindow,
     TechSearch,
     ContainerLimit,
+    InserterUseFilters,
+    InserterBlacklist,
+    InserterFilter(u8),
+    InserterOverride,
+    /// The override slider (the hand size it spans to).
+    InserterOverrideSlider(u32),
 }
 
 /// What the tooltip should describe when this element is hovered.
@@ -478,6 +490,34 @@ fn clicks(
             pending.push(InputAction::SetContainerLimit(Some(i)));
         }
         (UiButton::ContainerLimit, SimButton::Left) => local.limit_mode = !local.limit_mode,
+        (UiButton::InserterUseFilters | UiButton::InserterBlacklist, _) => {
+            if let Some(EntityState::Inserter(i)) = opened(&sim).and_then(|id| sim.0.entity(id)).map(|e| &e.state) {
+                let (use_filters, blacklist) = match target {
+                    UiButton::InserterUseFilters => (!i.use_filters, i.blacklist),
+                    _ => (i.use_filters, !i.blacklist),
+                };
+                pending.push(InputAction::SetInserterFilterMode { use_filters, blacklist });
+            }
+        }
+        (UiButton::InserterFilter(k), SimButton::Left) => {
+            pending.push(InputAction::SetInserterFilter { index: k, item: held });
+        }
+        (UiButton::InserterFilter(k), SimButton::Right) => {
+            pending.push(InputAction::SetInserterFilter { index: k, item: None });
+        }
+        (UiButton::InserterOverride, _) => {
+            if let Some(e) = opened(&sim).and_then(|id| sim.0.entity(id))
+                && let EntityState::Inserter(i) = &e.state
+            {
+                let size = factorio_sim::machines::hand_size(&sim.0, sim.0.prototypes().entity(e.proto));
+                pending.push(InputAction::SetInserterStackOverride(if i.stack_override.is_some() {
+                    None
+                } else {
+                    Some(size)
+                }));
+            }
+        }
+        (UiButton::InserterOverrideSlider(_), _) => {}
         (UiButton::ContainerLimit, SimButton::Right) => {
             local.limit_mode = false;
             pending.push(InputAction::SetContainerLimit(None));
@@ -1188,6 +1228,28 @@ fn slot_takes(sim: &Sim, slot: SlotRef, item: ItemId) -> bool {
     factorio_sim::cursor::read_slot(&sim.0, LOCAL_PLAYER, slot).is_some_and(|c| c.is_none_or(|s| s.item == item))
 }
 
+/// Dragging the inserter's stack size slider sets the override.
+fn override_slider(
+    mouse: Res<ButtonInput<MouseButton>>,
+    q: Query<(&Interaction, &UiButton, &bevy::ui::RelativeCursorPosition)>,
+    mut pending: ResMut<PendingInputs>,
+    mut last: Local<Option<u32>>,
+) {
+    if !mouse.pressed(MouseButton::Left) {
+        *last = None;
+        return;
+    }
+    for (i, b, cursor) in &q {
+        if let (Interaction::Pressed, UiButton::InserterOverrideSlider(max), Some(p)) = (i, b, cursor.normalized) {
+            let v = 1 + (((p.x + 0.5).clamp(0.0, 1.0) * (*max - 1) as f32).round() as u32);
+            if *last != Some(v) {
+                *last = Some(v);
+                pending.push(InputAction::SetInserterStackOverride(Some(v)));
+            }
+        }
+    }
+}
+
 /// Dragging with the cursor stack, as in the game: with the left button held, the stack
 /// is spread evenly over every slot swept; with the right, one item goes into each.
 fn drag_spread(
@@ -1595,6 +1657,203 @@ fn module_row(p: &mut ChildSpawnerCommands, ctx: &mut Ctx, proto: &factorio_sim:
     });
 }
 
+/// The game's checkbox: the box, with the check mark when `on`.
+fn checkbox(p: &mut ChildSpawnerCommands, on: bool, button: UiButton) {
+    let l = looks();
+    p.spawn((
+        Node { width: Val::Px(14.0), height: Val::Px(14.0), ..default() },
+        crate::gui_skin::node_image(if on { &l.checkbox_checked } else { &l.checkbox.default }),
+        button,
+        Button,
+    ))
+    .with_children(|c| {
+        if on {
+            c.spawn((
+                Node { width: Val::Percent(100.0), height: Val::Percent(100.0), ..default() },
+                crate::gui_skin::node_image(&l.checkmark),
+                Pickable::IGNORE,
+            ));
+        }
+    });
+}
+
+/// The inserter's filter section, as in the game: "Use filters" with the whitelist /
+/// blacklist switch on the left, the filter slots in a deep frame on the right.
+fn inserter_filters(p: &mut ChildSpawnerCommands, ctx: &mut Ctx, ins: &factorio_sim::machines::InserterState) {
+    p.spawn(Node { flex_direction: FlexDirection::Row, align_items: AlignItems::Center, ..default() }).with_children(
+        |row| {
+            row.spawn(Node {
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(8.0),
+                flex_grow: 1.0,
+                ..default()
+            })
+            .with_children(|col| {
+                col.spawn(Node {
+                    flex_direction: FlexDirection::Row,
+                    align_items: AlignItems::Center,
+                    column_gap: Val::Px(8.0),
+                    ..default()
+                })
+                .with_children(|r| {
+                    checkbox(r, ins.use_filters, UiButton::InserterUseFilters);
+                    ctx.text(r, "Use filters", 14.0, Color::WHITE);
+                });
+                // Whitelist [switch] Blacklist.
+                // The chosen side is bold and white, the other grey.
+                let side = |r: &mut ChildSpawnerCommands, ctx: &Ctx, s: &str, on: bool| {
+                    r.spawn((
+                        Text::new(s),
+                        TextFont {
+                            font: if on { ctx.fonts.bold.clone() } else { ctx.fonts.regular.clone() },
+                            font_size: 14.0,
+                            ..default()
+                        },
+                        TextColor(if on { Color::WHITE } else { Color::srgb(0.55, 0.55, 0.55) }),
+                    ));
+                };
+                col.spawn(Node {
+                    flex_direction: FlexDirection::Row,
+                    align_items: AlignItems::Center,
+                    column_gap: Val::Px(6.0),
+                    ..default()
+                })
+                .with_children(|r| {
+                    side(r, ctx, "Whitelist", !ins.blacklist);
+                    r.spawn((
+                        Node {
+                            width: Val::Px(30.0),
+                            height: Val::Px(14.0),
+                            justify_content: if ins.blacklist {
+                                JustifyContent::FlexEnd
+                            } else {
+                                JustifyContent::FlexStart
+                            },
+                            padding: UiRect::all(Val::Px(1.0)),
+                            border_radius: BorderRadius::all(Val::Px(7.0)),
+                            ..default()
+                        },
+                        BackgroundColor(Color::srgb(0.1, 0.1, 0.1)),
+                        UiButton::InserterBlacklist,
+                        Button,
+                    ))
+                    .with_children(|sw| {
+                        sw.spawn((
+                            Node {
+                                width: Val::Px(12.0),
+                                height: Val::Px(12.0),
+                                border_radius: BorderRadius::all(Val::Px(6.0)),
+                                ..default()
+                            },
+                            BackgroundColor(Color::srgb(0.6, 0.6, 0.6)),
+                            Pickable::IGNORE,
+                        ));
+                    });
+                    side(r, ctx, "Blacklist", ins.blacklist);
+                });
+            });
+            row.spawn(Node { flex_direction: FlexDirection::Row, padding: UiRect::all(Val::Px(4.0)), ..default() })
+                .with_children(|f| {
+                    crate::gui_skin::backdrop(f, &looks().deep_in_shallow);
+                    for (k, filter) in ins.filters.iter().enumerate() {
+                        ctx.slot(
+                            f,
+                            *filter,
+                            None,
+                            SLOT,
+                            Some(UiButton::InserterFilter(k as u8)),
+                            Some(Tip::Text("Click with an item to set the filter; right click clears it".into())),
+                        );
+                    }
+                });
+        },
+    );
+}
+
+/// The "Override stack size" row: checkbox, slider and value.
+fn inserter_stack_override(
+    p: &mut ChildSpawnerCommands,
+    ctx: &mut Ctx,
+    sim: &Sim,
+    proto: &factorio_sim::proto::EntityProto,
+    ins: &factorio_sim::machines::InserterState,
+) {
+    let max = factorio_sim::machines::hand_size(&sim.0, proto);
+    let value = factorio_sim::machines::effective_hand_size(&sim.0, proto, ins);
+    let l = looks();
+    p.spawn(Node {
+        flex_direction: FlexDirection::Row,
+        align_items: AlignItems::Center,
+        column_gap: Val::Px(8.0),
+        ..default()
+    })
+    .with_children(|r| {
+        checkbox(r, ins.stack_override.is_some(), UiButton::InserterOverride);
+        r.spawn((
+            Text::new("Override stack size"),
+            TextFont { font: ctx.fonts.regular.clone(), font_size: 14.0, ..default() },
+            TextColor(Color::WHITE),
+            TextLayout::new_with_no_wrap(),
+            Node { flex_grow: 1.0, ..default() },
+        ));
+        let fraction = if max > 1 { (value - 1) as f32 / (max - 1) as f32 } else { 0.0 };
+        r.spawn((
+            Node { width: Val::Px(160.0), height: Val::Px(12.0), align_items: AlignItems::Center, ..default() },
+            UiButton::InserterOverrideSlider(max),
+            Button,
+            bevy::ui::RelativeCursorPosition::default(),
+        ))
+        .with_children(|bar| {
+            bar.spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(0.0),
+                    right: Val::Px(0.0),
+                    height: Val::Px(4.0),
+                    ..default()
+                },
+                ImageNode { image: l.slider_empty.image.clone(), rect: Some(l.slider_empty.rect), ..default() },
+                Pickable::IGNORE,
+            ));
+            if ins.stack_override.is_some() {
+                bar.spawn((
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: Val::Px(0.0),
+                        width: Val::Percent(fraction * 100.0),
+                        height: Val::Px(12.0),
+                        ..default()
+                    },
+                    crate::gui_skin::node_image(&l.slider_full),
+                    Pickable::IGNORE,
+                ));
+            }
+            bar.spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(fraction * 140.0),
+                    width: Val::Px(20.0),
+                    height: Val::Px(12.0),
+                    ..default()
+                },
+                ImageNode { image: l.slider_handle.image.clone(), rect: Some(l.slider_handle.rect), ..default() },
+                Pickable::IGNORE,
+            ));
+        });
+        r.spawn((
+            Node {
+                width: Val::Px(80.0),
+                height: Val::Px(28.0),
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
+                ..default()
+            },
+            crate::gui_skin::node_image(&l.textbox),
+        ))
+        .with_children(|t| ctx.text(t, value.to_string(), 14.0, Color::BLACK));
+    });
+}
+
 /// An empty cell of a slot pane (`deep_slots_scroll_pane`'s tiled background).
 fn empty_cell(g: &mut ChildSpawnerCommands) {
     // As measured from the game: the cell is the pane's own colour, with only a lighter
@@ -1669,7 +1928,16 @@ fn structure_sig(sim: &Sim, id: EntityId) -> String {
         EntityState::Container(inv) => format!("{inv:?}"),
         EntityState::Drill(d) => format!("{:?}{:?}", burner(&d.energy), d.output),
         EntityState::Crafter(c) => format!("{:?}{:?}{:?}{:?}", c.recipe, c.input, c.output, burner(&c.energy)),
-        EntityState::Inserter(i) => format!("{:?}{:?}", i.hand.map(|h| h.item), burner(&i.energy)),
+        EntityState::Inserter(i) => format!(
+            "{:?}{:?}{:?}{}{}{:?}{}",
+            i.hand,
+            burner(&i.energy),
+            i.filters,
+            i.use_filters,
+            i.blacklist,
+            i.stack_override,
+            factorio_sim::machines::hand_size(&sim.0, sim.0.prototypes().entity(e.proto))
+        ),
         EntityState::Lab(l) => format!("{:?}{:?}", l.input, sim.0.research().current()),
         // Fluid amounts, power figures and graphs: refreshed once a second.
         EntityState::Fluid(f) => format!("{:?}{}", burner(&f.energy), sim.0.tick() / 60),
@@ -2107,10 +2375,17 @@ fn entity_panel(
                 Some(h) => ctx.slot(r, Some(h.item), Some(h.count), SLOT, None, None),
                 None => ghost_slot(r, ctx, "empty_inserter_hand_slot"),
             });
+            // As in the game: hand, fuel, filters, stack size override.
             if i.energy.burner().is_some() {
                 separator(p);
             }
             fuel_slots(p, ctx, &i.energy);
+            if !i.filters.is_empty() {
+                separator(p);
+                inserter_filters(p, ctx, i);
+            }
+            separator(p);
+            inserter_stack_override(p, ctx, sim, proto, i);
         }
         // Fluid contents and power output are shown in the hover info panel, not here.
         EntityState::Fluid(f) => fuel_slots(p, ctx, &f.energy),

@@ -308,6 +308,33 @@ pub(crate) fn apply_input(sim: &mut Simulation, player: u16, action: &InputActio
         InputAction::SetSlotFilter { slot, item } => {
             character_mut(sim, player).inventory.set_filter(slot as usize, item);
         }
+        InputAction::SetInserterFilter { index, item } => {
+            if let Some(id) = sim.players.get(&player).and_then(|p| p.opened)
+                && let Some(e) = sim.entities.get_mut(&id)
+                && let EntityState::Inserter(ins) = &mut e.state
+                && let Some(f) = ins.filters.get_mut(index as usize)
+            {
+                *f = item;
+            }
+        }
+        InputAction::SetInserterFilterMode { use_filters, blacklist } => {
+            if let Some(id) = sim.players.get(&player).and_then(|p| p.opened)
+                && let Some(e) = sim.entities.get_mut(&id)
+                && let EntityState::Inserter(ins) = &mut e.state
+                && !ins.filters.is_empty()
+            {
+                ins.use_filters = use_filters;
+                ins.blacklist = blacklist;
+            }
+        }
+        InputAction::SetInserterStackOverride(n) => {
+            if let Some(id) = sim.players.get(&player).and_then(|p| p.opened)
+                && let Some(e) = sim.entities.get_mut(&id)
+                && let EntityState::Inserter(ins) = &mut e.state
+            {
+                ins.stack_override = n.map(|n| n.max(1));
+            }
+        }
         InputAction::SetContainerLimit(bar) => {
             if let Some(id) = sim.players.get(&player).and_then(|p| p.opened)
                 && let Some(e) = sim.entities.get_mut(&id)

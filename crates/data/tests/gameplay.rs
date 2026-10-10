@@ -551,6 +551,49 @@ fn electric_inserter_moves_0_86_items_per_second() {
 }
 
 #[test]
+fn inserter_stack_size_bonus_moves_two_per_swing() {
+    let d = game!();
+    let mut sim = flat_world(d);
+    // Inserter capacity bonus 2 gives normal inserters +1 hand size.
+    let tech = sim.prototypes().technology_id("inserter-capacity-bonus-2").unwrap();
+    sim.finish_research(tech);
+    steam_power(&mut sim, 1);
+    place(&mut sim, "small-electric-pole", 1, 0, Direction::NORTH);
+    let from = place(&mut sim, "iron-chest", 2, 0, Direction::NORTH);
+    place(&mut sim, "inserter", 2, 1, Direction::NORTH);
+    let to = place(&mut sim, "iron-chest", 2, 2, Direction::NORTH);
+    insert(&mut sim, from, "iron-plate", 400);
+    ticks_until(&mut sim, 2000, |s| container_count(s, to, "iron-plate") == 2);
+    for _ in 0..3600 {
+        sim.step(&[]);
+    }
+    let moved = container_count(&sim, to, "iron-plate") - 2;
+    // Two plates every 70-tick swing.
+    assert!((102..=104).contains(&moved), "moved {moved}");
+}
+
+#[test]
+fn inserter_filters_pick_only_their_items() {
+    let d = game!();
+    let mut sim = flat_world(d);
+    let from = place(&mut sim, "iron-chest", 2, 0, Direction::NORTH);
+    let ins = place(&mut sim, "burner-inserter", 2, 1, Direction::NORTH);
+    let to = place(&mut sim, "iron-chest", 2, 2, Direction::NORTH);
+    insert(&mut sim, ins, "coal", 5);
+    let copper = item(&sim, "copper-plate");
+    input(&mut sim, InputAction::OpenEntity(Some(MapPosition::tile_center(TilePosition::new(2, 1)))));
+    input(&mut sim, InputAction::SetInserterFilter { index: 0, item: Some(copper) });
+    input(&mut sim, InputAction::SetInserterFilterMode { use_filters: true, blacklist: false });
+    insert(&mut sim, from, "iron-plate", 10);
+    insert(&mut sim, from, "copper-plate", 10);
+    for _ in 0..1200 {
+        sim.step(&[]);
+    }
+    assert_eq!(container_count(&sim, to, "iron-plate"), 0);
+    assert!(container_count(&sim, to, "copper-plate") > 0);
+}
+
+#[test]
 fn electric_drill_mines_half_an_ore_per_second() {
     let d = game!();
     let mut sim = flat_world(d);

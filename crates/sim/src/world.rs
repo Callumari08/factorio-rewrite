@@ -728,25 +728,32 @@ impl Simulation {
 
     /// Whether an automated source could insert `item` right now.
     pub fn entity_wants(&self, id: EntityId, item: ItemId) -> bool {
-        let Some(e) = self.entities.get(&id) else { return false };
+        self.inserter_room(id, item) > 0
+    }
+
+    /// How many of `item` an inserter may put into this entity now (the game's insertion
+    /// limits for machine inputs and fuel, free space for containers).
+    pub fn inserter_room(&self, id: EntityId, item: ItemId) -> u32 {
+        let Some(e) = self.entities.get(&id) else { return 0 };
         let db = &self.db;
         let proto = db.entity(e.proto);
-        let fuel_ok = |energy: &EnergyState| match (energy.burner(), proto.energy_source()) {
-            (Some(b), Some(src)) => {
-                Burner::accepts(db, src, item) && b.fuel.count(item) < 5 && b.fuel.space_for(db, item) > 0
+        // Automated fuel insertion tops fuel up to 5 items, as before.
+        let fuel = |energy: &EnergyState| match (energy.burner(), proto.energy_source()) {
+            (Some(b), Some(src)) if Burner::accepts(db, src, item) => {
+                5u32.saturating_sub(b.fuel.count(item)).min(b.fuel.space_for(db, item))
             }
-            _ => false,
+            _ => 0,
         };
         match &e.state {
-            EntityState::Container(inv) => inv.space_for(db, item) > 0,
-            EntityState::Drill(d) => fuel_ok(&d.energy),
-            EntityState::Inserter(i) => fuel_ok(&i.energy),
-            EntityState::Fluid(f) => fuel_ok(&f.energy),
+            EntityState::Container(inv) => inv.space_for(db, item),
+            EntityState::Drill(d) => fuel(&d.energy),
+            EntityState::Inserter(i) => fuel(&i.energy),
+            EntityState::Fluid(f) => fuel(&f.energy),
             EntityState::Crafter(c) => {
-                fuel_ok(&c.energy) || c.ingredient_room(db, &self.research, proto, item, InsertSource::Automated) > 0
+                fuel(&c.energy).max(c.ingredient_room(db, &self.research, proto, item, InsertSource::Automated))
             }
-            EntityState::Lab(l) => l.room_for(db, proto, item, true) > 0,
-            _ => false,
+            EntityState::Lab(l) => l.room_for(db, proto, item, true),
+            _ => 0,
         }
     }
 

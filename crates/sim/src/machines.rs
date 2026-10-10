@@ -478,6 +478,13 @@ fn update_crafter(sim: &mut Simulation, id: EntityId) {
 pub struct InserterState {
     pub energy: EnergyState,
     pub hand: Option<ItemStack>,
+    /// Item filters (as many as the prototype's `filter_count`), used when `use_filters`.
+    pub filters: Vec<Option<ItemId>>,
+    pub use_filters: bool,
+    /// The filters list what not to take, instead of what to take.
+    pub blacklist: bool,
+    /// A smaller hand size set by the player (the window's "Override stack size").
+    pub stack_override: Option<u32>,
     /// Arm angle in turns: 0 at the pickup position, 0.5 at the drop position.
     pub rotation: Fixed,
     /// Arm length in tiles.
@@ -491,11 +498,21 @@ fn vec_len(v: [Fixed; 2]) -> Fixed {
 impl InserterState {
     pub fn new(proto: &EntityProto, source: &EnergySource) -> Self {
         let EntityData::Inserter { pickup_position, .. } = &proto.data else { unreachable!() };
+        let EntityData::Inserter { filter_count, .. } = &proto.data else { unreachable!() };
         InserterState {
             energy: EnergyState::for_source(source),
             extension: vec_len(*pickup_position),
+            filters: vec![None; *filter_count as usize],
             ..Default::default()
         }
+    }
+
+    /// Whether the filters let this inserter move `item`.
+    pub fn allows(&self, item: ItemId) -> bool {
+        if !self.use_filters || self.filters.iter().all(Option::is_none) {
+            return true;
+        }
+        self.filters.contains(&Some(item)) != self.blacklist
     }
 
     pub fn reset_after_rotation(&mut self) {
@@ -528,6 +545,7 @@ fn update_inserter(sim: &mut Simulation, id: EntityId) {
         energy_per_movement,
         energy_per_rotation,
         energy_source,
+        ..
     } = &proto.data
     else {
         unreachable!()
@@ -555,6 +573,15 @@ fn update_inserter(sim: &mut Simulation, id: EntityId) {
         None if at_pickup(&ins) => {
             pick_up(sim, &db, &mut ins, proto, pickup_at, drop_at, position);
             true
+        }
+        // Still at the pickup with room in the hand: keep taking while items are there
+        // (from belts one per tick), leaving when none came unless it waits for a full hand.
+        Some(stack) if at_pickup(&ins) && stack.count < hand_limit(sim, proto, &ins, drop_at, stack.item) => {
+            let before = stack.count;
+            pick_up(sim, &db, &mut ins, proto, pickup_at, drop_at, position);
+            let got = ins.hand.map_or(0, |h| h.count) > before;
+            let waits = matches!(proto.data, EntityData::Inserter { wait_for_full_hand: true, .. });
+            got || waits
         }
         Some(stack) if at_drop(&ins) => {
             drop_item(sim, &mut ins, stack, drop_at, position);
@@ -584,6 +611,39 @@ fn update_inserter(sim: &mut Simulation, id: EntityId) {
     put_state(sim, id, EntityState::Inserter(ins));
 }
 
+/// How many items the hand holds at most: 1, plus the prototype's bonus, plus the force's
+/// inserter stack size bonus (or bulk inserter capacity bonus for bulk inserters).
+pub fn hand_size(sim: &Simulation, proto: &EntityProto) -> u32 {
+    let EntityData::Inserter { bulk, stack_size_bonus, uses_stack_size_bonus, .. } = &proto.data else { return 1 };
+    let research = if *uses_stack_size_bonus {
+        let kind = if *bulk { "bulk-inserter-capacity-bonus" } else { "inserter-stack-size-bonus" };
+        sim.research.modifier(kind, None).floor_int().max(0) as u32
+    } else {
+        0
+    };
+    1 + stack_size_bonus + research
+}
+
+/// The hand size of this inserter, with its override.
+pub fn effective_hand_size(sim: &Simulation, proto: &EntityProto, ins: &InserterState) -> u32 {
+    let size = hand_size(sim, proto);
+    ins.stack_override.map_or(size, |o| o.clamp(1, size))
+}
+
+/// The most this inserter should hold of `item` for its drop target: its hand size, but
+/// no more than a machine or chest can take (belts and the ground take any amount).
+fn hand_limit(sim: &Simulation, proto: &EntityProto, ins: &InserterState, drop_at: MapPosition, item: ItemId) -> u32 {
+    let size = effective_hand_size(sim, proto, ins);
+    let needs_fuel = ins.energy.burner().is_some_and(|b| !b.has_fuel());
+    if sim.belts.at_tile(drop_at.tile()).is_some() || needs_fuel {
+        return size;
+    }
+    match sim.entity_at(drop_at) {
+        Some(eid) => size.min(sim.inserter_room(eid, item).max(1)),
+        None => size,
+    }
+}
+
 fn drop_item(
     sim: &mut Simulation,
     ins: &mut InserterState,
@@ -591,11 +651,22 @@ fn drop_item(
     drop_at: MapPosition,
     position: MapPosition,
 ) {
-    if output_item(sim, drop_at, stack.item, InsertSource::Automated, position, true) {
-        ins.hand = if stack.count > 1 { Some(ItemStack::new(stack.item, stack.count - 1)) } else { None };
+    // Onto a belt or the ground one item per tick; into an entity as many as fit at once.
+    let onto_belt = sim.belts.at_tile(drop_at.tile()).is_some();
+    let into_entity = !onto_belt && sim.entity_at(drop_at).is_some();
+    let mut left = stack.count;
+    while left > 0 && output_item(sim, drop_at, stack.item, InsertSource::Automated, position, true) {
+        left -= 1;
+        if !into_entity {
+            break;
+        }
     }
+    ins.hand = (left > 0).then(|| ItemStack::new(stack.item, left));
 }
 
+/// Takes items at the pickup position: with an empty hand, one stack of an acceptable
+/// item (all at once from an entity, one item from a belt or the ground); with items in
+/// the hand, more of the same.
 fn pick_up(
     sim: &mut Simulation,
     db: &PrototypeDb,
@@ -606,7 +677,7 @@ fn pick_up(
     position: MapPosition,
 ) {
     // A burner inserter with no fuel takes fuel for itself first.
-    let needs_own_fuel = ins.energy.burner().is_some_and(|b| !b.has_fuel());
+    let needs_own_fuel = ins.energy.burner().is_some_and(|b| !b.has_fuel()) && ins.hand.is_none();
     let source = proto.energy_source().cloned();
     let fuel_for_self = |i: ItemId| match &source {
         Some(src) => crate::energy::Burner::accepts(db, src, i),
@@ -615,10 +686,11 @@ fn pick_up(
 
     let drop_entity = if sim.belts.at_tile(drop_at.tile()).is_some() { None } else { sim.entity_at(drop_at) };
 
-    // Decide which of the items available at the source are acceptable, then take one.
+    // Decide which of the items available at the source are acceptable.
     let tile = pickup_at.tile();
     let belt = sim.belts.at_tile(tile);
     let source_entity = if belt.is_some() { None } else { sim.entity_at(pickup_at) };
+    let held = ins.hand.map(|h| h.item);
     let mut candidates: Vec<ItemId> = match (belt, source_entity) {
         (Some(bid), _) => {
             sim.belts.get(bid).unwrap().lanes.iter().flat_map(|l| l.items.iter().map(|i| i.item)).collect()
@@ -630,32 +702,45 @@ fn pick_up(
     candidates.dedup();
     let accepted: Vec<ItemId> = candidates
         .into_iter()
+        .filter(|i| held.is_none_or(|h| h == *i))
         .filter(|i| {
             (needs_own_fuel && fuel_for_self(*i))
-                || match drop_entity {
-                    Some(eid) => sim.entity_wants(eid, *i),
-                    None => true,
-                }
+                || (ins.allows(*i)
+                    && match drop_entity {
+                        Some(eid) => sim.entity_wants(eid, *i),
+                        None => true,
+                    })
         })
         .collect();
     if accepted.is_empty() {
         return;
     }
     let accept = |i: ItemId| accepted.binary_search(&i).is_ok();
-    let item = match (belt, source_entity) {
+    let take_one = |sim: &mut Simulation, accept: &dyn Fn(ItemId) -> bool| match (belt, source_entity) {
         (Some(bid), _) => {
             let b = sim.belts.get_mut(bid).unwrap();
             let (near, far) = b.lanes_seen_from(tile, position);
             b.take(&[near, far], accept)
         }
-        (None, Some(eid)) => sim.take_for_inserter(eid, &accept),
-        (None, None) => sim.take_from_ground(pickup_at, &accept),
+        (None, Some(eid)) => sim.take_for_inserter(eid, accept),
+        (None, None) => sim.take_from_ground(pickup_at, accept),
     };
-    let Some(item) = item else { return };
+    let Some(item) = take_one(sim, &accept) else { return };
     if needs_own_fuel && fuel_for_self(item) {
         let b = ins.energy.burner_mut().unwrap();
         b.fuel.insert(db, item, 1);
         return;
     }
-    ins.hand = Some(ItemStack::new(item, 1));
+    let mut count = ins.hand.map_or(0, |h| h.count) + 1;
+    // From an entity, the rest of the hand in the same tick.
+    if source_entity.is_some() {
+        let limit = hand_limit(sim, proto, ins, drop_at, item);
+        while count < limit {
+            if take_one(sim, &|i: ItemId| i == item).is_none() {
+                break;
+            }
+            count += 1;
+        }
+    }
+    ins.hand = Some(ItemStack::new(item, count));
 }

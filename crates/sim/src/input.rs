@@ -100,6 +100,18 @@ pub enum InputAction {
         slot: u16,
         item: Option<ItemId>,
     },
+    /// Sets one of the opened inserter's filters.
+    SetInserterFilter {
+        index: u8,
+        item: Option<ItemId>,
+    },
+    /// Turns the opened inserter's filters on or off, as a whitelist or blacklist.
+    SetInserterFilterMode {
+        use_filters: bool,
+        blacklist: bool,
+    },
+    /// Sets (or clears) the opened inserter's stack size override.
+    SetInserterStackOverride(Option<u32>),
     /// Puts the cursor stack back into the inventory (Q).
     ClearCursor,
     /// Takes a stack of the item from the inventory into the cursor (quickbar keys, pipette).
