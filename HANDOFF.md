@@ -90,7 +90,9 @@ Read this first when picking the project up in a new session. See also
   without asking; keep them brief. Map previews (`--generate-map-preview`) open no window.
 - **GUI references** live in the gitignored `screenshots/reference/` (Callum's pasted
   screenshots, 2560x1440 at his automatic 125 % GUI scale). The one-shot real-game
-  capture run (isolated config and a `guishot` mod) is `screenshots/capture/capture.sh`.
+  capture run (isolated config and a `guishot` mod) is `screenshots/capture/capture.sh`;
+  it sets `SteamAppId` so Steam does not restart the game (no clicks needed), and
+  Callum must not have Factorio already running.
   Script screenshots cannot show the HUD, tooltips or hover panels; ask Callum to paste
   those. Screenshot hooks: `FACTORIO_REWRITE_UI=e|tech|settings|chest|furnace|lab|drill|
   inserter|belt|power|fluid|mine|hand`, `FACTORIO_REWRITE_TIP=recipe:<name>`,
