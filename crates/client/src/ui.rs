@@ -609,7 +609,7 @@ impl Ctx<'_> {
     fn subheading(&self, p: &mut ChildSpawnerCommands, s: impl Into<String>) {
         p.spawn((
             Text::new(s.into()),
-            TextFont { font: self.fonts.semibold.clone(), font_size: 15.0, ..default() },
+            TextFont { font: self.fonts.regular.clone(), font_size: 15.0, ..default() },
             TextColor(Color::WHITE),
         ));
     }
@@ -747,51 +747,56 @@ impl Ctx<'_> {
         make: impl Fn(usize) -> SlotRef,
     ) {
         grid(p, columns, |g| {
-            for (i, s) in inv.slots().iter().enumerate() {
-                let hand = s.is_none() && inv.reserved() == Some(i);
-                // Slots past a container's limit are red; the first shows the limit mark.
-                let barred = inv.bar().is_some_and(|b| i >= b);
-                let bg = if barred { SLOT_RED } else { INV };
-                g.spawn(Node { width: Val::Px(SLOT_PX), height: Val::Px(SLOT_PX), ..default() }).with_children(|c| {
-                    self.slot_ext(
-                        c,
-                        s.map(|s| s.item),
-                        s.map(|s| s.count),
-                        bg,
-                        Some(UiButton::Slot(make(i))),
-                        None,
-                        hand,
-                    );
-                    // An empty filtered slot shows its item pale.
-                    if let (None, Some(f)) = (s, inv.filter(i)) {
-                        c.spawn((
-                            Node {
-                                position_type: PositionType::Absolute,
-                                left: Val::Px(4.0),
-                                top: Val::Px(4.0),
-                                width: Val::Px(32.0),
-                                height: Val::Px(32.0),
-                                ..default()
-                            },
-                            Pickable::IGNORE,
-                        ))
-                        .with_children(|m| self.icon_tinted(m, f, 32.0, Color::srgba(1.0, 1.0, 1.0, 0.35)));
-                    }
-                    if inv.bar() == Some(i) && s.is_none() {
-                        c.spawn((
-                            Node {
-                                position_type: PositionType::Absolute,
-                                left: Val::Px(4.0),
-                                top: Val::Px(4.0),
-                                width: Val::Px(32.0),
-                                height: Val::Px(32.0),
-                                ..default()
-                            },
-                            Pickable::IGNORE,
-                        ))
-                        .with_children(|m| self.utility(m, "set_bar_slot", 32.0));
-                    }
-                });
+            for i in 0..inv.len() {
+                self.inventory_slot(g, inv, i, &make);
+            }
+        });
+    }
+
+    /// One slot of an inventory grid: its contents, the hand, a filter's pale item, and
+    /// the red of slots past a container's limit.
+    fn inventory_slot(
+        &mut self,
+        g: &mut ChildSpawnerCommands,
+        inv: &Inventory,
+        i: usize,
+        make: &dyn Fn(usize) -> SlotRef,
+    ) {
+        let s = &inv.slots()[i];
+        let hand = s.is_none() && inv.reserved() == Some(i);
+        // Slots past a container's limit are red; the first shows the limit mark.
+        let barred = inv.bar().is_some_and(|b| i >= b);
+        let bg = if barred { SLOT_RED } else { INV };
+        g.spawn(Node { width: Val::Px(SLOT_PX), height: Val::Px(SLOT_PX), ..default() }).with_children(|c| {
+            self.slot_ext(c, s.map(|s| s.item), s.map(|s| s.count), bg, Some(UiButton::Slot(make(i))), None, hand);
+            // An empty filtered slot shows its item pale.
+            if let (None, Some(f)) = (s, inv.filter(i)) {
+                c.spawn((
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: Val::Px(4.0),
+                        top: Val::Px(4.0),
+                        width: Val::Px(32.0),
+                        height: Val::Px(32.0),
+                        ..default()
+                    },
+                    Pickable::IGNORE,
+                ))
+                .with_children(|m| self.icon_tinted(m, f, 32.0, Color::srgba(1.0, 1.0, 1.0, 0.35)));
+            }
+            if inv.bar() == Some(i) && s.is_none() {
+                c.spawn((
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: Val::Px(4.0),
+                        top: Val::Px(4.0),
+                        width: Val::Px(32.0),
+                        height: Val::Px(32.0),
+                        ..default()
+                    },
+                    Pickable::IGNORE,
+                ))
+                .with_children(|m| self.utility(m, "set_bar_slot", 32.0));
             }
         });
     }
@@ -1377,44 +1382,48 @@ fn window(
             );
         }),
         // The character window: the Character and Crafting frames side by side.
+        // Both frames share their top and height, as in the game.
         None => {
-            frame(w, &mut ctx, "Character", &[], |w, ctx| {
-                panel(w, PANEL_W, |p| {
-                    // Toolbar: the colour picker and the player's colour.
-                    p.spawn(Node {
-                        flex_direction: FlexDirection::Row,
-                        justify_content: JustifyContent::FlexEnd,
-                        column_gap: Val::Px(4.0),
-                        height: Val::Px(28.0),
-                        ..default()
-                    })
-                    .with_children(|t| {
-                        let l = looks();
-                        t.spawn((
-                            Node {
-                                width: Val::Px(28.0),
+            w.spawn(Node { flex_direction: FlexDirection::Row, align_items: AlignItems::Stretch, ..default() })
+                .with_children(|w| {
+                    frame(w, &mut ctx, "Character", &[], |w, ctx| {
+                        panel(w, PANEL_W, |p| {
+                            // Toolbar: the colour picker and the player's colour.
+                            p.spawn(Node {
+                                flex_direction: FlexDirection::Row,
+                                justify_content: JustifyContent::FlexEnd,
+                                column_gap: Val::Px(4.0),
                                 height: Val::Px(28.0),
-                                justify_content: JustifyContent::Center,
-                                align_items: AlignItems::Center,
                                 ..default()
-                            },
-                            crate::gui_skin::node_image(&l.button.default),
-                            l.button.clone(),
-                            Button,
-                            Tip::Text("Character colour".into()),
-                        ))
-                        .with_children(|b| ctx.utility(b, "color_picker", 24.0));
-                        t.spawn((
-                            Node { width: Val::Px(28.0), height: Val::Px(28.0), ..default() },
-                            BackgroundColor(Color::srgb(0.869, 0.5, 0.130)),
-                        ));
+                            })
+                            .with_children(|t| {
+                                let l = looks();
+                                t.spawn((
+                                    Node {
+                                        width: Val::Px(28.0),
+                                        height: Val::Px(28.0),
+                                        justify_content: JustifyContent::Center,
+                                        align_items: AlignItems::Center,
+                                        ..default()
+                                    },
+                                    crate::gui_skin::node_image(&l.button.default),
+                                    l.button.clone(),
+                                    Button,
+                                    Tip::Text("Character colour".into()),
+                                ))
+                                .with_children(|b| ctx.utility(b, "color_picker", 24.0));
+                                t.spawn((
+                                    Node { width: Val::Px(28.0), height: Val::Px(28.0), ..default() },
+                                    BackgroundColor(Color::srgb(0.869, 0.5, 0.130)),
+                                ));
+                            });
+                            ctx.inventory(p, &c.inventory, 10, |i| SlotRef::Character(i as u16));
+                        });
                     });
-                    ctx.inventory(p, &c.inventory, 10, |i| SlotRef::Character(i as u16));
+                    frame(w, &mut ctx, "Crafting", &["search", "close"], |w, ctx| {
+                        crafting_panel(w, ctx, &names, c, local.tab, cheat);
+                    });
                 });
-            });
-            frame(w, &mut ctx, "Crafting", &["search", "close"], |w, ctx| {
-                crafting_panel(w, ctx, &names, c, local.tab, cheat);
-            });
         }
     });
 }
@@ -1614,14 +1623,23 @@ fn empty_cell(g: &mut ChildSpawnerCommands) {
 /// with circuit connectors, the logistic network button for those that can also be
 /// controlled by a logistic network (as in the game), then close.
 fn network_buttons(sim: &Sim, data: &Data, id: EntityId) -> Vec<&'static str> {
-    let mut out = Vec::new();
+    // Windows with the character's inventory start with its search button.
+    let mut out = if shows_inventory(sim, id) { vec!["search"] } else { Vec::new() };
     if let Some(e) = sim.0.entity(id) {
         let proto = sim.0.prototypes().entity(e.proto);
         let raw = data.0.prototype(&proto.kind, &proto.name);
         if raw.get("circuit_wire_max_distance").as_f64().is_some_and(|d| d > 0.0) {
             out.push("circuit_network_panel");
-            let logistic =
-                ["transport-belt", "inserter", "assembling-machine", "mining-drill", "pump", "offshore-pump", "lamp"];
+            let logistic = [
+                "transport-belt",
+                "inserter",
+                "assembling-machine",
+                "furnace",
+                "mining-drill",
+                "pump",
+                "offshore-pump",
+                "lamp",
+            ];
             if logistic.contains(&proto.kind.as_str()) {
                 out.push("logistic_network_panel_white");
             }
@@ -1966,17 +1984,16 @@ fn entity_panel(
     };
     match &e.state {
         EntityState::Container(inv) => {
-            // The slots in a deep frame, as in the game.
-            p.spawn(Node { align_self: AlignSelf::FlexStart, ..default() }).with_children(|f| {
-                crate::gui_skin::backdrop(f, &looks().deep_in_shallow);
-                ctx.inventory(f, inv, 10, |i| SlotRef::Opened(EntityInventory::Main, i as u16));
-            });
-            // The limit button: click it, then a slot, to stop automatic filling from that
-            // slot on; right click removes the limit.
+            // As in the game: the slots, then the limit button in the next cell, then
+            // empty cells to the end of the row. Click the button, then a slot, to stop
+            // automatic filling from that slot on; right click removes the limit.
             let l = looks();
-            let look = if local.limit_mode { &l.yellow_slot } else { &l.red_button };
-            p.spawn(Node { flex_direction: FlexDirection::Row, ..default() }).with_children(|r| {
-                r.spawn((
+            let look = if local.limit_mode { &l.yellow_slot } else { &l.red_slot };
+            grid(p, 10, |g| {
+                for i in 0..inv.len() {
+                    ctx.inventory_slot(g, inv, i, &|i| SlotRef::Opened(EntityInventory::Main, i as u16));
+                }
+                g.spawn((
                     Node {
                         width: Val::Px(SLOT_PX),
                         height: Val::Px(SLOT_PX),
@@ -1991,6 +2008,9 @@ fn entity_panel(
                     Tip::Text("Limit: click, then click a slot. Right click removes the limit.".into()),
                 ))
                 .with_children(|b| ctx.utility(b, "set_bar_slot", 32.0));
+                for _ in (inv.len() + 1)..(inv.len() + 1).div_ceil(10) * 10 {
+                    empty_cell(g);
+                }
             });
         }
         EntityState::Drill(d) => {
@@ -2030,7 +2050,7 @@ fn entity_panel(
                     let label = c.recipe.map(|r| names.recipe(r).to_owned()).unwrap_or("No recipe".into());
                     r.spawn((
                         Text::new(label),
-                        TextFont { font: ctx.fonts.bold.clone(), font_size: 14.0, ..default() },
+                        TextFont { font: ctx.fonts.regular.clone(), font_size: 15.0, ..default() },
                         TextColor(Color::WHITE),
                         Node { flex_grow: 1.0, ..default() },
                     ));
@@ -2076,6 +2096,9 @@ fn entity_panel(
                 ctx.inventory(r, &c.output, n, |i| SlotRef::Opened(EntityInventory::Output, i as u16));
             });
             module_row(p, ctx, proto);
+            if c.energy.burner().is_some() {
+                separator(p);
+            }
             fuel_slots(p, ctx, &c.energy);
         }
         EntityState::Inserter(i) => {
