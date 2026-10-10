@@ -761,7 +761,7 @@ impl Ctx<'_> {
             } else if hand {
                 self.utility(c, "hand", 32.0);
             }
-            if let Some(n) = count.filter(|n| *n > 1) {
+            if let Some(n) = count.filter(|n| *n >= 1) {
                 // The game's `count-font`: bold 13 with a dark outline.
                 c.spawn((
                     Text::new(n.to_string()),
@@ -1504,9 +1504,8 @@ fn crafting_panel(p: &mut ChildSpawnerCommands, ctx: &mut Ctx, names: &Names, c:
             && rec.ingredients.iter().all(|i| matches!(i.what, ItemOrFluid::Item(_)))
             && rec.results.iter().all(|x| matches!(x.what, ItemOrFluid::Item(_)))
     };
-    // As in the game, every enabled recipe is listed; those that cannot be made by hand
-    // (another crafting category, or fluids) are red, those you lack ingredients for
-    // plain and without a count.
+    // As in the game, every enabled recipe is listed; those that cannot be crafted now
+    // (another crafting category, fluids, or missing ingredients) are red, without a count.
     let shown = |r: RecipeId| enabled[r.index()];
     let groups: Vec<&MenuGroup> = names.menu.iter().filter(|g| g.rows.iter().flatten().any(|r| shown(*r))).collect();
     let tab = tab.min(groups.len().saturating_sub(1));
@@ -1582,7 +1581,9 @@ fn crafting_panel(p: &mut ChildSpawnerCommands, ctx: &mut Ctx, names: &Names, c:
                                     ItemOrFluid::Item(i) => Some(i),
                                     _ => None,
                                 });
-                                let bg = if by_hand { SLOT } else { SLOT_RED };
+                                // Red whenever it cannot be crafted now: another crafting
+                                // category, or not enough ingredients.
+                                let bg = if can > 0 { SLOT } else { SLOT_RED };
                                 ctx.slot(
                                     g,
                                     main,
