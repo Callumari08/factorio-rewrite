@@ -289,6 +289,7 @@ pub(crate) fn apply_input(sim: &mut Simulation, player: u16, action: &InputActio
                 && let EntityState::Crafter(c) = &mut e.state
             {
                 returned = c.set_recipe(&db, db.entity(e.proto), recipe);
+                sim.power.mark_dirty();
             }
             for s in returned {
                 give(sim, player, s.item, s.count);
@@ -392,6 +393,7 @@ pub(crate) fn apply_input(sim: &mut Simulation, player: u16, action: &InputActio
         }
         InputAction::JoinGame
         | InputAction::CheatPlaceEntity { .. }
+        | InputAction::CheatFluid { .. }
         | InputAction::CheatInsert { .. }
         | InputAction::CheatSetRecipe { .. }
         | InputAction::QueueResearch { .. }

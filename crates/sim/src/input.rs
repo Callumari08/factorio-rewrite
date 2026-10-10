@@ -3,8 +3,9 @@
 //! In lockstep multiplayer, peers exchange these per tick and every peer applies the
 //! same list in the same order, so they must be plain data with a total order.
 
+use crate::fixed::Fixed;
 use crate::map::{Direction, MapPosition};
-use crate::proto::{EntityProtoId, ItemId, RecipeId, TechId};
+use crate::proto::{EntityProtoId, FluidId, ItemId, RecipeId, TechId};
 
 /// Which inventory of an entity a GUI slot belongs to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -171,6 +172,13 @@ pub enum InputAction {
         position: MapPosition,
         item: ItemId,
         count: u32,
+    },
+    /// Sandbox/testing: puts fluid into the entity's first fluid box that its recipe (or
+    /// it) takes in.
+    CheatFluid {
+        position: MapPosition,
+        fluid: FluidId,
+        amount: Fixed,
     },
     /// Sandbox/testing: sets a machine's recipe without reach.
     CheatSetRecipe {

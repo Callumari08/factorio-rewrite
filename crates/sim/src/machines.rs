@@ -299,8 +299,7 @@ impl CrafterState {
         let EntityData::CraftingMachine { crafting_categories, .. } = &proto.data else { return Vec::new() };
         if let Some(r) = recipe {
             let rec = db.recipe(r);
-            let items_only = rec.ingredients.iter().chain_results(rec);
-            if !crafting_categories.contains(&rec.category) || !items_only {
+            if !crafting_categories.contains(&rec.category) || recipe_fluid_boxes(proto, rec).is_none() {
                 return Vec::new();
             }
         }
@@ -314,6 +313,10 @@ impl CrafterState {
         self.crafting = false;
         self.progress = Fixed::ZERO;
         self.recipe = recipe;
+        // Fluids do not survive a recipe change.
+        for b in self.fluids.iter_mut() {
+            *b = crate::power::FluidBox::default();
+        }
         match recipe {
             Some(r) => {
                 let rec = db.recipe(r);
@@ -410,44 +413,80 @@ impl CrafterState {
         }
     }
 
-    fn has_ingredients(&self, db: &PrototypeDb, r: RecipeId) -> bool {
-        db.recipe(r).ingredients.iter().all(|i| match i.what {
+    fn has_ingredients(&self, db: &PrototypeDb, proto: &EntityProto, r: RecipeId) -> bool {
+        let rec = db.recipe(r);
+        let Some((fin, _)) = recipe_fluid_boxes(proto, rec) else { return false };
+        let mut k = 0;
+        rec.ingredients.iter().all(|i| match i.what {
             ItemOrFluid::Item(item) => self.input.count(item) >= i.amount.floor_int() as u32,
-            ItemOrFluid::Fluid(_) => false,
+            ItemOrFluid::Fluid(f) => {
+                let b = self.fluids[fin[k]];
+                k += 1;
+                b.fluid == Some(f) && b.amount >= i.amount
+            }
         })
     }
 
-    fn results_fit(&self, db: &PrototypeDb, r: RecipeId) -> bool {
-        db.recipe(r).results.iter().all(|p| match (p.what, p.fixed_count()) {
+    fn results_fit(&self, db: &PrototypeDb, proto: &EntityProto, r: RecipeId) -> bool {
+        let rec = db.recipe(r);
+        let Some((_, fout)) = recipe_fluid_boxes(proto, rec) else { return false };
+        let boxes = crate::power::fluid_boxes(proto);
+        let mut k = 0;
+        rec.results.iter().all(|p| match (p.what, p.fixed_count()) {
             (ItemOrFluid::Item(i), Some(n)) => self.output.space_for(db, i) >= n,
             (ItemOrFluid::Item(i), None) => self.output.space_for(db, i) >= p.amount_max.ceil_int() as u32,
-            (ItemOrFluid::Fluid(_), _) => false,
+            (ItemOrFluid::Fluid(f), _) => {
+                let bi = fout[k];
+                k += 1;
+                let b = self.fluids[bi];
+                b.fluid.is_none_or(|x| x == f) && b.amount + p.amount_max <= boxes[bi].volume
+            }
         })
     }
 
-    fn try_start(&mut self, db: &PrototypeDb) -> bool {
+    fn try_start(&mut self, db: &PrototypeDb, proto: &EntityProto) -> bool {
         let Some(r) = self.recipe else { return false };
-        if !self.has_ingredients(db, r) || !self.results_fit(db, r) {
+        if !self.has_ingredients(db, proto, r) || !self.results_fit(db, proto, r) {
             return false;
         }
         for s in item_ingredients(db, r) {
             self.input.remove(s.item, s.count);
+        }
+        let rec = db.recipe(r);
+        let (fin, _) = recipe_fluid_boxes(proto, rec).unwrap();
+        let mut k = 0;
+        for i in &rec.ingredients {
+            if let ItemOrFluid::Fluid(_) = i.what {
+                let b = &mut self.fluids[fin[k]];
+                k += 1;
+                b.amount -= i.amount;
+                if !b.amount.is_positive() {
+                    *b = crate::power::FluidBox::default();
+                }
+            }
         }
         self.crafting = true;
         true
     }
 }
 
-trait ChainResults {
-    fn chain_results(self, rec: &crate::proto::RecipeProto) -> bool;
-}
-
-impl<'a, I: Iterator<Item = &'a crate::proto::Ingredient>> ChainResults for I {
-    /// True when every ingredient and result is an item (fluids are not simulated yet).
-    fn chain_results(mut self, rec: &crate::proto::RecipeProto) -> bool {
-        self.all(|i| matches!(i.what, ItemOrFluid::Item(_)))
-            && rec.results.iter().all(|p| matches!(p.what, ItemOrFluid::Item(_)))
-    }
+/// Which of a machine's fluid boxes a recipe uses: its fluid ingredients go to the input
+/// boxes in order, its fluid results to the output boxes in order. `None` when the
+/// machine lacks the boxes.
+pub fn recipe_fluid_boxes(proto: &EntityProto, rec: &crate::proto::RecipeProto) -> Option<(Vec<usize>, Vec<usize>)> {
+    use crate::proto::FluidProduction as P;
+    let boxes = crate::power::fluid_boxes(proto);
+    let inputs: Vec<usize> = boxes
+        .iter()
+        .enumerate()
+        .filter(|(_, b)| matches!(b.production, P::Input | P::InputOutput))
+        .map(|(i, _)| i)
+        .collect();
+    let outputs: Vec<usize> =
+        boxes.iter().enumerate().filter(|(_, b)| matches!(b.production, P::Output)).map(|(i, _)| i).collect();
+    let n_in = rec.ingredients.iter().filter(|i| matches!(i.what, ItemOrFluid::Fluid(_))).count();
+    let n_out = rec.results.iter().filter(|p| matches!(p.what, ItemOrFluid::Fluid(_))).count();
+    (n_in <= inputs.len() && n_out <= outputs.len()).then(|| (inputs[..n_in].to_vec(), outputs[..n_out].to_vec()))
 }
 
 fn item_ingredients(db: &PrototypeDb, r: RecipeId) -> Vec<ItemStack> {
@@ -480,7 +519,7 @@ fn update_crafter(sim: &mut Simulation, id: EntityId) {
             .and_then(|i| CrafterState::furnace_recipe_for(&db, &sim.research, proto, i))
             .or(c.recipe);
     }
-    if !c.crafting && !c.try_start(&db) {
+    if !c.crafting && !c.try_start(&db, proto) {
         c.progress = Fixed::ZERO;
         put_state(sim, id, EntityState::Crafter(c));
         return;
@@ -490,9 +529,21 @@ fn update_crafter(sim: &mut Simulation, id: EntityId) {
     let r = c.recipe.unwrap();
     let ticks = db.recipe(r).ticks();
     let mut crafted = Vec::new();
-    if c.progress >= ticks && c.results_fit(&db, r) {
+    if c.progress >= ticks && c.results_fit(&db, proto, r) {
         c.progress -= ticks;
+        let fout = recipe_fluid_boxes(proto, db.recipe(r)).map(|(_, o)| o).unwrap_or_default();
+        let mut k = 0;
         for p in &db.recipe(r).results {
+            if let ItemOrFluid::Fluid(f) = p.what {
+                let made = p.amount_max;
+                let temp = p.temperature.unwrap_or(db.fluid(f).default_temperature);
+                let b = &mut c.fluids[fout[k]];
+                k += 1;
+                let total = b.amount + made;
+                b.temperature = (b.temperature * b.amount + temp * made) / total;
+                b.amount = total;
+                b.fluid = Some(f);
+            }
             if let ItemOrFluid::Item(i) = p.what {
                 let n = match p.fixed_count() {
                     Some(n) => n,
@@ -517,7 +568,7 @@ fn update_crafter(sim: &mut Simulation, id: EntityId) {
                 .and_then(|i| CrafterState::furnace_recipe_for(&db, &sim.research, proto, i))
                 .or(c.recipe);
         }
-        if !c.try_start(&db) {
+        if !c.try_start(&db, proto) {
             c.progress = Fixed::ZERO;
         }
     }

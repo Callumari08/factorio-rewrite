@@ -263,6 +263,23 @@ fn connections(db: &PrototypeDb, e: &crate::world::Entity) -> Vec<Connection> {
     out
 }
 
+/// The fluid boxes of an entity that join fluid segments: all of them, except that a
+/// crafting machine connects only the boxes its recipe uses (the game hides the others,
+/// `fluid_boxes_off_when_no_fluid_recipe`).
+fn used_boxes(db: &PrototypeDb, e: &crate::world::Entity) -> Vec<usize> {
+    let proto = db.entity(e.proto);
+    let n = fluid_boxes(proto).len();
+    match &e.state {
+        EntityState::Crafter(c) => {
+            match c.recipe.and_then(|r| crate::machines::recipe_fluid_boxes(proto, db.recipe(r))) {
+                Some((i, o)) => i.into_iter().chain(o).collect(),
+                None => Vec::new(),
+            }
+        }
+        _ => (0..n).collect(),
+    }
+}
+
 fn find(parent: &mut BTreeMap<(EntityId, usize), (EntityId, usize)>, k: (EntityId, usize)) -> (EntityId, usize) {
     let mut r = k;
     while parent[&r] != r {
@@ -287,10 +304,13 @@ fn rebuild(sim: &mut Simulation) {
     let mut conns: BTreeMap<EntityId, Vec<Connection>> = BTreeMap::new();
     for (id, e) in &sim.entities {
         if let Some(boxes) = state_boxes(&e.state) {
+            let used = used_boxes(&db, e);
             for bi in 0..boxes.len() {
-                parent.insert((*id, bi), (*id, bi));
+                if used.contains(&bi) {
+                    parent.insert((*id, bi), (*id, bi));
+                }
             }
-            conns.insert(*id, connections(&db, e));
+            conns.insert(*id, connections(&db, e).into_iter().filter(|c| used.contains(&c.0)).collect());
         }
     }
     let by_tile: BTreeMap<TilePosition, EntityId> =

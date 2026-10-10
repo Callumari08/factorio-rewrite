@@ -719,6 +719,34 @@ fn pumpjack_pumps_crude_oil_by_yield() {
 }
 
 #[test]
+fn refinery_turns_crude_oil_into_petroleum() {
+    let d = game!();
+    let mut sim = flat_world(d);
+    steam_power(&mut sim, 1);
+    place(&mut sim, "small-electric-pole", 1, 0, Direction::NORTH);
+    place(&mut sim, "small-electric-pole", 4, 4, Direction::NORTH);
+    let refinery = place(&mut sim, "oil-refinery", 6, 6, Direction::NORTH);
+    let at = sim.entity(refinery).unwrap().position;
+    let basic = sim.prototypes().recipe_id("basic-oil-processing").unwrap();
+    input(&mut sim, InputAction::CheatSetRecipe { position: at, recipe: basic });
+    let crude = sim.prototypes().fluid_id("crude-oil").unwrap();
+    let gas = sim.prototypes().fluid_id("petroleum-gas").unwrap();
+    input(&mut sim, InputAction::CheatFluid { position: at, fluid: crude, amount: Fixed::from_int(200) });
+    let gas_amount = |sim: &Simulation| match &sim.entity(refinery).unwrap().state {
+        EntityState::Crafter(c) => {
+            c.fluids.iter().filter(|b| b.fluid == Some(gas)).map(|b| b.amount.to_f64_lossy()).sum::<f64>()
+        }
+        _ => 0.0,
+    };
+    // 100 crude oil into 45 petroleum gas in 5 s at crafting speed 1.
+    let t = ticks_until(&mut sim, 2000, |s| gas_amount(s) > 0.0);
+    assert_eq!(gas_amount(&sim), 45.0);
+    let t2 = ticks_until(&mut sim, 2000, |s| gas_amount(s) > 45.0);
+    assert_eq!(gas_amount(&sim), 90.0);
+    assert!((299..=301).contains(&t2), "second batch took {t2} ticks (first {t})");
+}
+
+#[test]
 fn electric_drill_mines_half_an_ore_per_second() {
     let d = game!();
     let mut sim = flat_world(d);

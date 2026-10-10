@@ -299,6 +299,30 @@ impl Simulation {
             let _ = self.place_entity(entity, position, direction);
             return;
         }
+        if let InputAction::CheatFluid { position, fluid, amount } = input.action {
+            if let Some(id) = self.entity_at(position)
+                && let Some(e) = self.entities.get_mut(&id)
+            {
+                let db = self.db.clone();
+                let proto = db.entity(e.proto);
+                let target = match &e.state {
+                    EntityState::Crafter(c) => c
+                        .recipe
+                        .and_then(|r| crate::machines::recipe_fluid_boxes(proto, db.recipe(r)))
+                        .and_then(|(i, _)| i.first().copied()),
+                    _ => Some(0),
+                };
+                if let (Some(bi), Some(boxes)) = (target, crate::power::state_boxes_mut(&mut e.state))
+                    && let Some(b) = boxes.get_mut(bi)
+                {
+                    let volume = crate::power::fluid_boxes(proto)[bi].volume;
+                    b.fluid = Some(fluid);
+                    b.amount = (b.amount + amount).min(volume);
+                    b.temperature = db.fluid(fluid).default_temperature;
+                }
+            }
+            return;
+        }
         if let InputAction::CheatSetRecipe { position, recipe } = input.action {
             if let Some(id) = self.entity_at(position)
                 && let Some(e) = self.entities.get_mut(&id)
@@ -306,6 +330,8 @@ impl Simulation {
             {
                 let db = self.db.clone();
                 c.set_recipe(&db, db.entity(e.proto), Some(recipe));
+                // The machine's fluid connections depend on the recipe.
+                self.power.mark_dirty();
             }
             return;
         }
