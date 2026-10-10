@@ -81,9 +81,10 @@ Each step ends with a playtest. Feedback from it becomes a ".5" step before the 
 5. **Inserters and poles.** Done: inserter hand size with research bonuses, whole-stack
    pickup and drops, belt pickup while items arrive, filters, stack size override, the
    inserter window; copper wires as game state with the game's auto-connect rules
-   (closest first, no triangles, at most 5), drawn sagging. Left: wiring by hand with
-   copper wire (click poles, Shift+click to disconnect), inserters chasing moving belt
-   items within the pickup area, wait_for_full_hand circuit control.
+   (closest first, no triangles, at most 5), drawn sagging, poles turning to follow
+   them; wiring by hand with copper wire. Later: inserters chasing moving belt items
+   (needs 2D item positions on belts and a real-game throughput measurement), circuit
+   control of inserters.
 6. **Fluids and oil.** Full fluid system, pumpjacks, oil refining, chemical plants, fluid
    recipes in assemblers.
 7. **Trains and logistic robots.**
