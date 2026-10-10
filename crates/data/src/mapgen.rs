@@ -226,12 +226,20 @@ pub fn noise_mapgen(data: &GameData, db: &PrototypeDb, planet: &str, seed: u64) 
         inputs
             .variables
             .insert(format!("entity:{name}:richness"), richness.clone().unwrap_or_else(|| probability.clone()));
-        // Fluid resources (crude oil) are placed as single entities; not generated yet.
-        let solid =
-            proto.minable.as_ref().is_some_and(|m| m.results.iter().all(|r| matches!(r.what, ItemOrFluid::Item(_))));
         let order = raw.get("autoplace").get("order").as_str().unwrap_or("").to_owned();
-        if kind == "resource" && solid {
-            resources.push((order.clone() + &name, ResourceAutoplace { resource: e, probability, richness, order }));
+        if kind == "resource" {
+            // Resources bigger than a tile (crude oil) keep that much room around them.
+            let cb = raw.get("collision_box");
+            let extent = [cb.at(0).at(0), cb.at(0).at(1), cb.at(1).at(0), cb.at(1).at(1)]
+                .iter()
+                .filter_map(|v| v.as_f64())
+                .fold(0.0f64, |m, v| m.max(v.abs()));
+            let spacing = (extent - 0.5).ceil().max(0.0) as i32;
+            let _ = proto;
+            resources.push((
+                order.clone() + &name,
+                ResourceAutoplace { resource: e, probability, richness, order, spacing },
+            ));
         } else if matches!(kind, "tree" | "simple-entity") {
             let a = raw.get("autoplace");
             let restriction: Vec<&str> =

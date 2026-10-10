@@ -676,6 +676,49 @@ fn poles_take_at_most_five_wires() {
 }
 
 #[test]
+fn pumpjack_pumps_crude_oil_by_yield() {
+    let d = game!();
+    let mut sim = flat_world(d);
+    steam_power(&mut sim, 1);
+    // A well at 150 % yield under a pumpjack, and a storage tank on its output.
+    let oil = sim.prototypes().entity_id("crude-oil").unwrap();
+    let pj = sim.prototypes().entity_id("pumpjack").unwrap();
+    let centre = sim.prototypes().entity(pj).position_for_tile(TilePosition::new(6, 6), Direction::NORTH).tile();
+    sim.surface.set_resource(centre, Some(ResourceTile { proto: oil, amount: 450_000 }));
+    // Poles from the steam engine (east of the boiler) to the pumpjack.
+    place(&mut sim, "small-electric-pole", 1, 0, Direction::NORTH);
+    place(&mut sim, "small-electric-pole", 4, 4, Direction::NORTH);
+    let jack = place(&mut sim, "pumpjack", 6, 6, Direction::NORTH);
+    // A pipe on the output connection (one tile north of the top-right corner tile).
+    let pipe = place(&mut sim, "pipe", centre.x + 1, centre.y - 2, Direction::NORTH);
+    let amount = |sim: &Simulation| {
+        let pipe_amount = match &sim.entity(pipe).unwrap().state {
+            EntityState::Fluid(f) => f.boxes[0].amount.to_f64_lossy(),
+            _ => 0.0,
+        };
+        let jack_amount = match &sim.entity(jack).unwrap().state {
+            EntityState::Drill(d) => d.fluids.iter().map(|b| b.amount.to_f64_lossy()).sum(),
+            _ => 0.0,
+        };
+        pipe_amount + jack_amount
+    };
+    ticks_until(&mut sim, 600, |s| amount(s) > 0.0);
+    // The segment shares it with the pipe on the next tick.
+    sim.step(&[]);
+    assert!(
+        matches!(&sim.entity(pipe).unwrap().state, EntityState::Fluid(f) if f.boxes[0].amount.is_positive()),
+        "oil reaches the pipe"
+    );
+    let start = amount(&sim);
+    for _ in 0..600 {
+        sim.step(&[]);
+    }
+    // 10 per second at 100 %: 15 per second here, 150 in ten seconds.
+    let pumped = amount(&sim) - start;
+    assert!((148.0..=152.0).contains(&pumped), "pumped {pumped}");
+}
+
+#[test]
 fn electric_drill_mines_half_an_ore_per_second() {
     let d = game!();
     let mut sim = flat_world(d);

@@ -38,6 +38,9 @@ pub struct ResourceAutoplace {
     pub richness: Option<NoiseDef>,
     /// Resources with the same order compete: only the most probable is tried on a tile.
     pub order: String,
+    /// Tiles kept clear of the same resource around each one (crude oil wells occupy
+    /// about 3x3 tiles; ores 0).
+    pub spacing: i32,
 }
 
 /// A tree, rock or other entity placed by map generation.
@@ -139,6 +142,7 @@ pub struct Generator {
     tiles: Vec<(TileId, NodeId, bool)>,
     resources: Vec<(EntityProtoId, NodeId, NodeId)>,
     resource_orders: Vec<String>,
+    resource_spacing: Vec<i32>,
     /// Groups of entities sharing an order string, each with its probability.
     entity_groups: Vec<Vec<(EntityAutoplace, NodeId)>>,
     decoratives: Vec<(DecorativeAutoplace, NodeId)>,
@@ -199,11 +203,13 @@ impl Generator {
         let cliff_levels = (number("cliff_elevation_0", 10.0), number("cliff_elevation_interval", 40.0));
         let seed = settings.constants.numbers.get("map_seed").copied().unwrap_or(0.0) as u32;
         let resource_orders = settings.resources.iter().map(|r| r.order.clone()).collect();
+        let resource_spacing = settings.resources.iter().map(|r| r.spacing).collect();
         Ok(Generator {
             program: c.program,
             tiles,
             resources,
             resource_orders,
+            resource_spacing,
             entity_groups,
             decoratives,
             cliffs,
@@ -275,6 +281,24 @@ impl Generator {
                     continue;
                 }
                 let amount = values[self.tiles.len() + 2 * best + 1][i];
+                // Large resources (oil wells) keep their neighbourhood clear.
+                let spacing = self.resource_spacing[best];
+                if spacing > 0 {
+                    let (x, y) = ((i as i32 % CHUNK_SIZE), (i as i32 / CHUNK_SIZE));
+                    let blocked = (-spacing..=spacing).any(|dy| {
+                        (-spacing..=spacing).any(|dx| {
+                            let (nx, ny) = (x + dx, y + dy);
+                            let j = ny * CHUNK_SIZE + nx;
+                            (0..CHUNK_SIZE).contains(&nx)
+                                && (0..CHUNK_SIZE).contains(&ny)
+                                && (j as usize) < i
+                                && resources[j as usize].is_some_and(|(r, _)| r == *resource)
+                        })
+                    });
+                    if blocked {
+                        continue;
+                    }
+                }
                 if amount >= 1.0 {
                     resources[i] = Some((*resource, amount.min(u32::MAX as f32) as u32));
                     break;

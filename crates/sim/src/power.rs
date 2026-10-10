@@ -49,7 +49,31 @@ pub fn fluid_boxes(proto: &EntityProto) -> Vec<&FluidBoxProto> {
             vec![fluid_box]
         }
         EntityData::Boiler { fluid_box, output_fluid_box, .. } => vec![fluid_box, output_fluid_box],
+        // Drills: the mining fluid input first, then the output (pumpjacks).
+        EntityData::MiningDrill { input_fluid_box, output_fluid_box, .. } => {
+            input_fluid_box.iter().chain(output_fluid_box.iter()).collect()
+        }
+        EntityData::CraftingMachine { fluid_boxes, .. } => fluid_boxes.iter().collect(),
         _ => Vec::new(),
+    }
+}
+
+/// The fluid contents of an entity, in [`fluid_boxes`] order.
+pub fn state_boxes(state: &EntityState) -> Option<&Vec<FluidBox>> {
+    match state {
+        EntityState::Fluid(f) => Some(&f.boxes),
+        EntityState::Drill(d) if !d.fluids.is_empty() => Some(&d.fluids),
+        EntityState::Crafter(c) if !c.fluids.is_empty() => Some(&c.fluids),
+        _ => None,
+    }
+}
+
+pub fn state_boxes_mut(state: &mut EntityState) -> Option<&mut Vec<FluidBox>> {
+    match state {
+        EntityState::Fluid(f) => Some(&mut f.boxes),
+        EntityState::Drill(d) if !d.fluids.is_empty() => Some(&mut d.fluids),
+        EntityState::Crafter(c) if !c.fluids.is_empty() => Some(&mut c.fluids),
+        _ => None,
     }
 }
 
@@ -227,7 +251,10 @@ fn connections(db: &PrototypeDb, e: &crate::world::Entity) -> Vec<Connection> {
     let mut out = Vec::new();
     for (bi, fb) in fluid_boxes(proto).into_iter().enumerate() {
         for c in &fb.connections {
-            let [x, y] = e.direction.rotate_vec(c.position);
+            let [x, y] = match &c.positions {
+                Some(ps) => ps[e.direction.cardinal_index()],
+                None => e.direction.rotate_vec(c.position),
+            };
             let tile = e.position.offset(x, y).tile();
             let facing = Direction((c.direction.0 + e.direction.0) % 16);
             out.push((bi, tile, facing, c.underground_max_distance));
@@ -259,8 +286,8 @@ fn rebuild(sim: &mut Simulation) {
     let mut parent: BTreeMap<(EntityId, usize), (EntityId, usize)> = BTreeMap::new();
     let mut conns: BTreeMap<EntityId, Vec<Connection>> = BTreeMap::new();
     for (id, e) in &sim.entities {
-        if let EntityState::Fluid(f) = &e.state {
-            for bi in 0..f.boxes.len() {
+        if let Some(boxes) = state_boxes(&e.state) {
+            for bi in 0..boxes.len() {
                 parent.insert((*id, bi), (*id, bi));
             }
             conns.insert(*id, connections(&db, e));
@@ -429,8 +456,8 @@ pub(crate) fn update(sim: &mut Simulation) {
         n.temperature = Fixed::ZERO;
         let mut heat = Fixed::ZERO;
         for (id, bi) in &n.members {
-            if let EntityState::Fluid(f) = &sim.entities[id].state {
-                let b = f.boxes[*bi];
+            if let Some(boxes) = state_boxes(&sim.entities[id].state) {
+                let b = boxes[*bi];
                 if let Some(fl) = b.fluid
                     && b.amount.is_positive()
                 {
@@ -579,8 +606,8 @@ pub(crate) fn update(sim: &mut Simulation) {
                 n.amount * volume / n.capacity
             };
             left -= share;
-            if let EntityState::Fluid(f) = &mut sim.entities.get_mut(id).unwrap().state {
-                f.boxes[*bi] = FluidBox {
+            if let Some(boxes) = state_boxes_mut(&mut sim.entities.get_mut(id).unwrap().state) {
+                boxes[*bi] = FluidBox {
                     fluid: if share.is_positive() { n.fluid } else { None },
                     amount: share,
                     temperature: n.temperature,

@@ -52,6 +52,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut f = std::io::BufWriter::new(std::fs::File::create(&out)?);
     writeln!(f, "P6 {size} {size} 255")?;
     let mut counts = std::collections::BTreeMap::<String, u32>::new();
+    let mut nearest = std::collections::BTreeMap::<String, (i64, i32, i32)>::new();
     let mut richness = std::collections::BTreeMap::<String, u64>::new();
     for y in 0..size {
         for x in 0..size {
@@ -63,12 +64,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let name = &db.entity(res.proto).name;
                 *counts.entry(name.clone()).or_default() += 1;
                 *richness.entry(name.clone()).or_default() += res.amount as u64;
+                let d = (t.x as i64).pow(2) + (t.y as i64).pow(2);
+                let e = nearest.entry(name.clone()).or_insert((i64::MAX, 0, 0));
+                if d < e.0 {
+                    *e = (d, t.x, t.y);
+                }
                 c = match name.as_str() {
                     "iron-ore" => [104, 132, 146],
                     "copper-ore" => [203, 97, 53],
                     "coal" => [10, 10, 10],
                     "stone" => [176, 154, 108],
                     "uranium-ore" => [0, 230, 0],
+                    "crude-oil" => [200, 40, 200],
                     _ => [255, 0, 255],
                 };
             }
@@ -86,6 +93,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             f.write_all(&c)?;
         }
+    }
+    for (k, (_, x, y)) in &nearest {
+        eprintln!("nearest {k}: {x},{y}");
     }
     for (k, v) in counts {
         match richness.get(&k) {

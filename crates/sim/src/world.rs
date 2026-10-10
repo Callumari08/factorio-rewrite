@@ -495,7 +495,7 @@ impl Simulation {
     ) -> EntityState {
         match &proto.data {
             EntityData::Container { inventory_size } => EntityState::Container(Inventory::new(*inventory_size)),
-            EntityData::MiningDrill { energy_source, .. } => EntityState::Drill(DrillState::new(energy_source)),
+            EntityData::MiningDrill { energy_source, .. } => EntityState::Drill(DrillState::new(proto, energy_source)),
             EntityData::CraftingMachine { .. } => EntityState::Crafter(CrafterState::new(proto)),
             EntityData::Inserter { energy_source, .. } => {
                 EntityState::Inserter(InserterState::new(proto, energy_source))

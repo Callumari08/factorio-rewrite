@@ -206,6 +206,9 @@ pub struct PipeConnection {
     pub flow: FlowDirection,
     /// For `pipe-to-ground` style connections.
     pub underground_max_distance: Option<u32>,
+    /// Explicit positions per facing (north, east, south, west) instead of rotating
+    /// `position` (the prototype's `positions`).
+    pub positions: Option<[[i32; 2]; 4]>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -214,6 +217,17 @@ pub struct FluidBoxProto {
     pub filter: Option<FluidId>,
     pub connections: Vec<PipeConnection>,
     pub minimum_temperature: Option<Fixed>,
+    /// For crafting machines: whether recipes draw from (`Input`) or fill (`Output`) it.
+    pub production: FluidProduction,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum FluidProduction {
+    #[default]
+    None,
+    Input,
+    Output,
+    InputOutput,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -225,6 +239,11 @@ pub enum EntityData {
         stage_counts: Vec<u32>,
         /// Whether map generation should place this resource (has `autoplace`).
         autoplace: bool,
+        /// Infinite resources: the amount meaning 100 % yield, the lowest it falls to,
+        /// and how much each mining cycle takes.
+        normal: u32,
+        minimum: u32,
+        infinite_depletion: u32,
     },
     Character {
         running_speed: Fixed,
@@ -250,6 +269,10 @@ pub enum EntityData {
         /// Output offset from the drill centre for a north-facing drill, 1/256 tiles.
         output_vector: [i32; 2],
         resource_categories: Vec<String>,
+        /// Pumpjacks: where mined fluid goes.
+        output_fluid_box: Option<FluidBoxProto>,
+        /// Drills that need a mining fluid (sulfuric acid for uranium).
+        input_fluid_box: Option<FluidBoxProto>,
     },
     CraftingMachine {
         furnace: bool,

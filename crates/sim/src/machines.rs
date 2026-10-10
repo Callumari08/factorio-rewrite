@@ -71,6 +71,8 @@ fn output_item(
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct DrillState {
     pub energy: EnergyState,
+    /// Fluid boxes (mining fluid input, pumpjack output), in `fluid_boxes` order.
+    pub fluids: Vec<crate::power::FluidBox>,
     /// Accumulated mining speed; a resource is mined when it reaches `mining_time * 60`.
     pub progress: Fixed,
     /// Mined item waiting for space at the output.
@@ -81,8 +83,9 @@ pub struct DrillState {
 }
 
 impl DrillState {
-    pub fn new(source: &EnergySource) -> Self {
-        DrillState { energy: EnergyState::for_source(source), ..Default::default() }
+    pub fn new(proto: &EntityProto, source: &EnergySource) -> Self {
+        let fluids = vec![crate::power::FluidBox::default(); crate::power::fluid_boxes(proto).len()];
+        DrillState { energy: EnergyState::for_source(source), fluids, ..Default::default() }
     }
 }
 
@@ -93,7 +96,9 @@ pub fn drill_resources(
     position: MapPosition,
     _dir: Direction,
 ) -> Vec<TilePosition> {
-    let EntityData::MiningDrill { radius, resource_categories, .. } = &proto.data else { return Vec::new() };
+    let EntityData::MiningDrill { radius, resource_categories, output_fluid_box, .. } = &proto.data else {
+        return Vec::new();
+    };
     let db = &sim.db;
     let r = *radius;
     let lt = MapPosition::new(position.x - r, position.y - r).tile();
@@ -108,8 +113,14 @@ pub fn drill_resources(
             }
             if let Some(res) = sim.surface.resource(t) {
                 let rp = db.entity(res.proto);
+                // Fluid results need somewhere to go (a pumpjack's output box).
+                let fluid_result = rp
+                    .minable
+                    .as_ref()
+                    .is_some_and(|m| m.results.iter().any(|r| matches!(r.what, ItemOrFluid::Fluid(_))));
                 let ok = matches!(&rp.data, EntityData::Resource { category, .. } if resource_categories.contains(category))
-                    && rp.minable.as_ref().is_some_and(|m| m.required_fluid.is_none());
+                    && rp.minable.as_ref().is_some_and(|m| m.required_fluid.is_none())
+                    && (!fluid_result || output_fluid_box.is_some());
                 if ok {
                     out.push(t);
                 }
@@ -151,13 +162,56 @@ fn update_drill(sim: &mut Simulation, id: EntityId) {
     d.working = frac.is_positive();
     d.progress += *mining_speed * frac;
 
-    let res_proto = sim.surface.resource(target).unwrap().proto;
+    let res_tile = sim.surface.resource(target).unwrap();
+    let res_proto = res_tile.proto;
     let rp = db.entity(res_proto);
     let minable = rp.minable.as_ref().unwrap();
     let threshold = minable.mining_ticks;
+    // A pumpjack waits while its output box has no room for a cycle's fluid.
+    let fluid_out = minable.results.iter().find_map(|r| match r.what {
+        ItemOrFluid::Fluid(f) => Some((f, r.amount_max)),
+        _ => None,
+    });
+    if let Some((fluid, amount)) = fluid_out {
+        let out = d.fluids.len() - 1;
+        let volume = crate::power::fluid_boxes(proto)[out].volume;
+        let b = d.fluids[out];
+        if b.fluid.is_some_and(|f| f != fluid) || b.amount + amount > volume {
+            d.progress = d.progress.min(threshold);
+            if d.progress >= threshold {
+                d.working = false;
+                put_state(sim, id, EntityState::Drill(d));
+                return;
+            }
+        }
+    }
     if d.progress >= threshold {
         d.progress -= threshold;
         let infinite = matches!(rp.data, EntityData::Resource { infinite: true, .. });
+        if let (Some((fluid, amount)), EntityData::Resource { normal, minimum, infinite_depletion, .. }) =
+            (fluid_out, &rp.data)
+        {
+            // Infinite resources: the yield is the amount over `normal`; each cycle takes
+            // `infinite_depletion_amount` until `minimum`.
+            let yield_ = Fixed::from_ratio(res_tile.amount.max(*minimum) as i64, *normal as i64);
+            let made = amount * yield_ * (Fixed::ONE + sim.research.modifier("mining-drill-productivity-bonus", None));
+            let out = d.fluids.len() - 1;
+            let temp = db.fluid(fluid).default_temperature;
+            let b = &mut d.fluids[out];
+            let total = b.amount + made;
+            b.temperature = if total.is_positive() { (b.temperature * b.amount + temp * made) / total } else { temp };
+            b.amount = total;
+            b.fluid = Some(fluid);
+            let left = res_tile.amount.saturating_sub(*infinite_depletion).max(*minimum);
+            if infinite {
+                sim.surface.deplete(target, res_tile.amount - left, true);
+            } else {
+                sim.surface.deplete(target, *infinite_depletion, false);
+            }
+            sim.research_trigger(TriggerEvent::Mined(res_proto));
+            put_state(sim, id, EntityState::Drill(d));
+            return;
+        }
         sim.surface.deplete(target, 1, infinite);
         sim.research_trigger(TriggerEvent::Mined(res_proto));
         // Mining productivity fills a bar; each time it is full an extra result is made.
@@ -190,6 +244,8 @@ fn update_drill(sim: &mut Simulation, id: EntityId) {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct CrafterState {
     pub energy: EnergyState,
+    /// Fluid boxes, in the prototype's order; recipes fill and draw from them.
+    pub fluids: Vec<crate::power::FluidBox>,
     pub recipe: Option<RecipeId>,
     pub input: Inventory,
     pub output: Inventory,
@@ -229,6 +285,7 @@ impl CrafterState {
             input: Inventory::new(source_inventory_size.unwrap_or(0)),
             output: Inventory::new(result_inventory_size.unwrap_or(0)),
             furnace: *furnace,
+            fluids: vec![crate::power::FluidBox::default(); crate::power::fluid_boxes(proto).len()],
             ..Default::default()
         }
     }

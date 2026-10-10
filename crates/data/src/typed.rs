@@ -203,6 +203,10 @@ impl Names {
                 },
                 underground_max_distance: (c.get("connection_type").as_str() == Some("underground"))
                     .then(|| c.get("max_underground_distance").as_i64().unwrap_or(10) as u32),
+                positions: (c.get("positions").as_array().len() == 4).then(|| {
+                    let ps = c.get("positions").as_array();
+                    [0, 1, 2, 3].map(|i| vector_subtiles(&ps[i]))
+                }),
             })
             .collect();
         FluidBoxProto {
@@ -210,6 +214,12 @@ impl Names {
             filter: v.get("filter").as_str().and_then(|f| self.fluids.get(f).copied()),
             connections,
             minimum_temperature: fx(v.get("minimum_temperature")),
+            production: match v.get("production_type").as_str() {
+                Some("input") => FluidProduction::Input,
+                Some("output") => FluidProduction::Output,
+                Some("input-output") => FluidProduction::InputOutput,
+                _ => FluidProduction::None,
+            },
         }
     }
 }
@@ -570,6 +580,9 @@ fn entity_proto(names: &Names, kind: &str, name: &str, p: &RawValue) -> std::res
                 .map(|v| v as u32)
                 .collect(),
             autoplace: !p.get("autoplace").is_nil(),
+            normal: p.get("normal").as_i64().unwrap_or(1).max(1) as u32,
+            minimum: p.get("minimum").as_i64().unwrap_or(0) as u32,
+            infinite_depletion: p.get("infinite_depletion_amount").as_i64().unwrap_or(1) as u32,
         },
         "character" => EntityData::Character {
             running_speed: fx_or(p.get("running_speed"), 0.15),
@@ -593,6 +606,8 @@ fn entity_proto(names: &Names, kind: &str, name: &str, p: &RawValue) -> std::res
             radius: subtiles(p.get("resource_searching_radius").as_f64().unwrap_or(0.49)),
             output_vector: vector_subtiles(p.get("vector_to_place_result")),
             resource_categories: strings(p.get("resource_categories")),
+            output_fluid_box: (!p.get("output_fluid_box").is_nil()).then(|| names.fluid_box(p.get("output_fluid_box"))),
+            input_fluid_box: (!p.get("input_fluid_box").is_nil()).then(|| names.fluid_box(p.get("input_fluid_box"))),
         },
         "furnace" | "assembling-machine" => {
             let energy_usage = usage("energy_usage");
@@ -698,7 +713,9 @@ fn entity_proto(names: &Names, kind: &str, name: &str, p: &RawValue) -> std::res
                 grid_offset: vector_subtiles(p.get("grid_offset")),
             }
         }
-        "pipe" | "pipe-to-ground" => EntityData::Pipe { fluid_box: names.fluid_box(p.get("fluid_box")) },
+        "pipe" | "pipe-to-ground" | "storage-tank" => {
+            EntityData::Pipe { fluid_box: names.fluid_box(p.get("fluid_box")) }
+        }
         _ => EntityData::Other,
     };
 
