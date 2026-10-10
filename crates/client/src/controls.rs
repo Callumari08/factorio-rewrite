@@ -101,6 +101,25 @@ fn open_from_env(mut commands: Commands, sim: Res<Sim>, mut ui: ResMut<UiState>,
     if let Some(item) = std::env::var("FACTORIO_REWRITE_FILTER").ok().and_then(|n| sim.0.prototypes().item_id(&n)) {
         pending.push(InputAction::SetSlotFilter { slot: 79, item: Some(item) });
     }
+    // `FACTORIO_REWRITE_UI=poles` builds a few poles near the character (wires).
+    if std::env::var("FACTORIO_REWRITE_UI").is_ok_and(|v| v == "poles") {
+        ui.inventory_open = false;
+        let db = sim.0.prototypes();
+        for (name, x, y) in [
+            ("small-electric-pole", -6, -4),
+            ("small-electric-pole", 0, -4),
+            ("small-electric-pole", 6, -3),
+            ("small-electric-pole", 3, 2),
+            ("medium-electric-pole", -5, 4),
+            ("medium-electric-pole", 4, 8),
+        ] {
+            if let Some(e) = db.entity_id(name) {
+                let pos = MapPosition::new(x * 256 + 128, y * 256 + 128);
+                pending.push(InputAction::CheatPlaceEntity { entity: e, position: pos, direction: Direction::NORTH });
+            }
+        }
+        return;
+    }
     // `FACTORIO_REWRITE_UI=mine` mines the nearest rock or tree (showing the mining bar).
     if std::env::var("FACTORIO_REWRITE_UI").is_ok_and(|v| v == "mine") {
         ui.inventory_open = false;

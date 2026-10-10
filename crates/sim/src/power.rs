@@ -170,6 +170,8 @@ impl NetworkStats {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PowerSystem {
     dirty: bool,
+    /// Copper wires between poles, both ways (each list sorted). Game state.
+    pub wires: BTreeMap<EntityId, Vec<EntityId>>,
     pub fluid_networks: Vec<FluidNetwork>,
     pub fluid_network_of: BTreeMap<(EntityId, usize), usize>,
     pub electric_networks: Vec<ElectricNetwork>,
@@ -334,14 +336,13 @@ fn rebuild(sim: &mut Simulation) {
         }
         i
     }
-    for i in 0..poles.len() {
-        for j in i + 1..poles.len() {
-            let reach = poles[i].3.min(poles[j].3).mul_int(SUBTILES_PER_TILE as i64).floor_int();
-            if poles[i].1.distance_sq(poles[j].1) <= reach * reach {
-                let (a, b) = (root(&mut pole_parent, i), root(&mut pole_parent, j));
-                if a != b {
-                    pole_parent[a.max(b)] = a.min(b);
-                }
+    let index: BTreeMap<EntityId, usize> = poles.iter().enumerate().map(|(i, p)| (p.0, i)).collect();
+    for (a, list) in &p.wires {
+        for b in list {
+            let (Some(&i), Some(&j)) = (index.get(a), index.get(b)) else { continue };
+            let (ra, rb) = (root(&mut pole_parent, i), root(&mut pole_parent, j));
+            if ra != rb {
+                pole_parent[ra.max(rb)] = ra.min(rb);
             }
         }
     }
@@ -588,4 +589,67 @@ pub(crate) fn update(sim: &mut Simulation) {
         }
     }
     sim.power.fluid_networks = nets;
+}
+
+/// Most copper wires a pole can have.
+pub const MAX_WIRES: usize = 5;
+
+/// Connects a newly built pole as the game does: to the poles in wire reach, closest
+/// first, at most [`MAX_WIRES`] on either pole, never to a pole already wired to one it
+/// has just been connected to (no triangles).
+pub(crate) fn connect_new_pole(sim: &mut Simulation, id: EntityId) {
+    let db = sim.db.clone();
+    let Some(e) = sim.entities.get(&id) else { return };
+    let EntityData::ElectricPole { maximum_wire_distance: reach, .. } = &db.entity(e.proto).data else { return };
+    let (at, reach) = (e.position, *reach);
+    let mut candidates: Vec<(i64, EntityId)> = sim
+        .entities
+        .iter()
+        .filter(|(other, _)| **other != id)
+        .filter_map(|(other, o)| match &db.entity(o.proto).data {
+            EntityData::ElectricPole { maximum_wire_distance, .. } => {
+                let r = reach.min(*maximum_wire_distance).mul_int(SUBTILES_PER_TILE as i64).floor_int();
+                let d = at.distance_sq(o.position);
+                (d <= r * r).then_some((d, *other))
+            }
+            _ => None,
+        })
+        .collect();
+    candidates.sort();
+    let mut connected: Vec<EntityId> = Vec::new();
+    for (_, other) in candidates {
+        if connected.len() >= MAX_WIRES {
+            break;
+        }
+        let theirs = sim.power.wires.get(&other).cloned().unwrap_or_default();
+        if theirs.len() >= MAX_WIRES || theirs.iter().any(|w| connected.contains(w)) {
+            continue;
+        }
+        connected.push(other);
+        add_wire(&mut sim.power, id, other);
+    }
+}
+
+fn add_wire(p: &mut PowerSystem, a: EntityId, b: EntityId) {
+    for (x, y) in [(a, b), (b, a)] {
+        let list = p.wires.entry(x).or_default();
+        if let Err(i) = list.binary_search(&y) {
+            list.insert(i, y);
+        }
+    }
+    p.mark_dirty();
+}
+
+/// Removes a pole's wires (when it is mined or destroyed).
+pub(crate) fn disconnect_pole(sim: &mut Simulation, id: EntityId) {
+    let Some(list) = sim.power.wires.remove(&id) else { return };
+    for other in list {
+        if let Some(l) = sim.power.wires.get_mut(&other) {
+            l.retain(|x| *x != id);
+            if l.is_empty() {
+                sim.power.wires.remove(&other);
+            }
+        }
+    }
+    sim.power.mark_dirty();
 }

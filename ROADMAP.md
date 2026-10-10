@@ -78,8 +78,12 @@ Each step ends with a playtest. Feedback from it becomes a ".5" step before the 
      the mining strip on the quickbar (Callum: not 1:1 yet).
 
 ## Next: the rest of step 3, in order
-5. **Inserters and poles.** Inserters reaching for moving belt items, stack bonuses, filter
-   inserters; electric pole wiring as in the game (nearest-pole rules, copper wire).
+5. **Inserters and poles.** Done: inserter hand size with research bonuses, whole-stack
+   pickup and drops, belt pickup while items arrive, filters, stack size override, the
+   inserter window; copper wires as game state with the game's auto-connect rules
+   (closest first, no triangles, at most 5), drawn sagging. Left: wiring by hand with
+   copper wire (click poles, Shift+click to disconnect), inserters chasing moving belt
+   items within the pickup area, wait_for_full_hand circuit control.
 6. **Fluids and oil.** Full fluid system, pumpjacks, oil refining, chemical plants, fluid
    recipes in assemblers.
 7. **Trains and logistic robots.**

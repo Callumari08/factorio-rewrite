@@ -594,6 +594,40 @@ fn inserter_filters_pick_only_their_items() {
 }
 
 #[test]
+fn poles_wire_to_the_closest_without_triangles() {
+    let d = game!();
+    let mut sim = flat_world(d);
+    let a = place(&mut sim, "small-electric-pole", 10, 10, Direction::NORTH);
+    let b = place(&mut sim, "small-electric-pole", 13, 10, Direction::NORTH);
+    let c = place(&mut sim, "small-electric-pole", 16, 10, Direction::NORTH);
+    let wires = |id| sim.power.wires.get(&id).cloned().unwrap_or_default();
+    assert_eq!(wires(a), vec![b]);
+    // C is in reach of A too, but A is wired to B: no triangle.
+    assert_eq!(wires(c), vec![b]);
+    assert_eq!(wires(b), vec![a, c]);
+    // Removing B cuts its wires.
+    sim.remove_entity(b);
+    assert!(sim.power.wires.get(&a).is_none());
+}
+
+#[test]
+fn poles_take_at_most_five_wires() {
+    let d = game!();
+    let mut sim = flat_world(d);
+    // A hub with five poles around it, each in its reach but out of each other's.
+    let hub = place(&mut sim, "small-electric-pole", 20, 20, Direction::NORTH);
+    for (x, y) in [(0, -7), (-7, -2), (-4, 6), (4, 6), (7, -2)] {
+        place(&mut sim, "small-electric-pole", 20 + x, 20 + y, Direction::NORTH);
+    }
+    assert_eq!(sim.power.wires.get(&hub).map(Vec::len), Some(5));
+    // A sixth pole next to the hub cannot wire to it; it wires to others instead.
+    let extra = place(&mut sim, "small-electric-pole", 22, 20, Direction::NORTH);
+    assert_eq!(sim.power.wires.get(&hub).map(Vec::len), Some(5));
+    assert!(!sim.power.wires[&hub].contains(&extra));
+    assert!(!sim.power.wires[&extra].is_empty());
+}
+
+#[test]
 fn electric_drill_mines_half_an_ore_per_second() {
     let d = game!();
     let mut sim = flat_world(d);

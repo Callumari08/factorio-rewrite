@@ -479,6 +479,7 @@ impl Simulation {
             self.tile_index.insert(t, id);
         }
         self.entities.insert(id, Entity { proto: proto_id, position, direction, state });
+        crate::power::connect_new_pole(self, id);
         self.power.mark_dirty();
         self.research_trigger(TriggerEvent::Built(proto_id));
         self.events.push(GameEvent::Built { entity: proto_id, position });
@@ -542,6 +543,7 @@ impl Simulation {
 
     /// Removes an entity and returns everything it contained (not the entity item itself).
     pub fn remove_entity(&mut self, id: EntityId) -> Vec<ItemStack> {
+        crate::power::disconnect_pole(self, id);
         let Some(e) = self.entities.remove(&id) else { return Vec::new() };
         let proto = self.db.entity(e.proto);
         for t in Self::footprint(proto, e.position, e.direction).tiles() {
@@ -817,6 +819,7 @@ impl Simulation {
         self.rng.state().hash(&mut h);
         self.next_entity_id.hash(&mut h);
         self.entities.hash(&mut h);
+        self.power.wires.hash(&mut h);
         for (id, b) in &self.belts.belts {
             id.hash(&mut h);
             b.hash(&mut h);

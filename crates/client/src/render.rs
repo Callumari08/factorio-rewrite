@@ -21,8 +21,10 @@ impl Plugin for RenderPlugin {
         app.init_resource::<Mirror>()
             .init_resource::<CliffMirror>()
             .init_resource::<Pools>()
+            .init_resource::<WireMirror>()
             .add_systems(Startup, spawn_character)
-            .add_systems(Update, (sync_entities, draw_items, draw_character, draw_ghost, follow_camera).chain());
+            .add_systems(Update, (sync_entities, draw_items, draw_character, draw_ghost, follow_camera).chain())
+            .add_systems(Update, draw_wires);
     }
 }
 
@@ -619,5 +621,79 @@ mod tests {
         assert_eq!(belt_row_name(Direction::NORTH, BeltShape::CurveRight), "east_to_north_index");
         assert_eq!(belt_row_name(Direction::EAST, BeltShape::CurveLeft), "north_to_east_index");
         assert_eq!(belt_row_name(Direction::SOUTH, BeltShape::Straight), "south_index");
+    }
+}
+
+/// Copper wires between poles, as in the game: its sagging-wire picture stretched between
+/// the two poles' copper connection points, with the shadow version between their shadow
+/// points.
+#[derive(Resource, Default)]
+pub struct WireMirror {
+    key: Vec<(EntityId, EntityId)>,
+    sprites: Vec<Entity>,
+}
+
+fn draw_wires(
+    mut commands: Commands,
+    sim: Res<Sim>,
+    data: Res<Data>,
+    assets: Res<AssetServer>,
+    mut mirror: ResMut<WireMirror>,
+) {
+    let pairs: Vec<(EntityId, EntityId)> = sim
+        .0
+        .power
+        .wires
+        .iter()
+        .flat_map(|(a, list)| list.iter().filter(move |b| a < *b).map(move |b| (*a, *b)))
+        .collect();
+    if pairs == mirror.key {
+        return;
+    }
+    for e in mirror.sprites.drain(..) {
+        commands.entity(e).despawn();
+    }
+    mirror.key = pairs.clone();
+    let Some(path) = data.0.resolve_path("__core__/graphics/copper-wire.png") else { return };
+    let image: Handle<Image> = assets.load(crate::sprites::asset_path(&data, &path));
+    let db = sim.0.prototypes();
+    // A pole's copper (or shadow) connection point in world coordinates.
+    let point = |id: EntityId, shadow: bool| -> Option<Vec2> {
+        let e = sim.0.entity(id)?;
+        let proto = db.entity(e.proto);
+        let cp = data.0.prototype(&proto.kind, &proto.name).get("connection_points").at(0);
+        let v = cp.get(if shadow { "shadow" } else { "wire" }).get("copper");
+        let (x, y) = (v.at(0).as_f64()? as f32, v.at(1).as_f64()? as f32);
+        Some(map_to_world(e.position) + Vec2::new(x, -y) * TILE)
+    };
+    for (a, b) in pairs {
+        for shadow in [true, false] {
+            let (Some(p), Some(q)) = (point(a, shadow), point(b, shadow)) else { continue };
+            // The wire hangs down by about a ninth of its length (as the game's wire picture
+            // does), drawn as short pieces of the picture's lowest, level stretch.
+            let len = (q - p).length();
+            if len < 1.0 {
+                continue;
+            }
+            let sag = len * 0.11;
+            const PIECES: usize = 16;
+            let at = |t: f32| p + (q - p) * t - Vec2::new(0.0, sag * 4.0 * t * (1.0 - t));
+            let (color, z) = if shadow { (Color::srgba(0.0, 0.0, 0.0, 0.5), -2.9) } else { (Color::WHITE, 50.0) };
+            for k in 0..PIECES {
+                let (u, v) = (at(k as f32 / PIECES as f32), at((k + 1) as f32 / PIECES as f32));
+                let d = v - u;
+                let mid = (u + v) / 2.0;
+                let sprite = Sprite {
+                    image: image.clone(),
+                    // The flat bottom of the picture's curve: the wire seen from the side.
+                    rect: Some(Rect::new(200.0, 84.0, 248.0, 92.0)),
+                    custom_size: Some(Vec2::new(d.length() + 0.5, 4.0)),
+                    color,
+                    ..default()
+                };
+                let t = Transform::from_xyz(mid.x, mid.y, z).with_rotation(Quat::from_rotation_z(d.y.atan2(d.x)));
+                mirror.sprites.push(commands.spawn((sprite, t)).id());
+            }
+        }
     }
 }
