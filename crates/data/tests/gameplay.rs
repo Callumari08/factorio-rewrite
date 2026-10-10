@@ -166,6 +166,32 @@ fn hand_crafting_makes_intermediates() {
 }
 
 #[test]
+fn craftable_count_matches_what_crafting_accepts() {
+    let d = game!();
+    let mut sim = flat_world(d);
+    input(&mut sim, InputAction::CheatResearchAll);
+    let fast = sim.prototypes().recipe_id("fast-transport-belt").unwrap();
+    let count = |sim: &Simulation| {
+        let c = sim.player(0).unwrap().character.as_ref().unwrap();
+        let cats = match &sim.prototypes().entity(c.proto).data {
+            factorio_sim::proto::EntityData::Character { crafting_categories, .. } => crafting_categories.clone(),
+            _ => Vec::new(),
+        };
+        factorio_sim::player::max_craftable(sim.prototypes(), &cats, &sim.research().recipes, &c.inventory, fast)
+    };
+    // 5 gears and a belt (11.5 plates' worth): not with 8 plates.
+    give(&mut sim, "iron-plate", 8);
+    assert_eq!(count(&sim), 0);
+    input(&mut sim, InputAction::Craft { recipe: fast, count: 1 });
+    assert!(sim.player(0).unwrap().character.as_ref().unwrap().queue.is_empty());
+    // With enough plates the menu's count and the queue agree.
+    give(&mut sim, "iron-plate", 20);
+    assert_eq!(count(&sim), 2);
+    input(&mut sim, InputAction::Craft { recipe: fast, count: 1 });
+    assert!(!sim.player(0).unwrap().character.as_ref().unwrap().queue.is_empty());
+}
+
+#[test]
 fn cancelling_a_craft_refunds_ingredients() {
     let d = game!();
     let mut sim = flat_world(d);
