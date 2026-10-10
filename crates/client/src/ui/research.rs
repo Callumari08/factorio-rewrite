@@ -292,6 +292,19 @@ impl Ctx<'_> {
     /// A technology slot: the picture on the state's colour, the packs it costs in the
     /// darker band below, its level for levelled technologies.
     fn tech_slot(&mut self, p: &mut ChildSpawnerCommands, t: TechId, w: f32, h: f32, button: Option<UiButton>) {
+        self.tech_slot_sel(p, t, w, h, button, false);
+    }
+
+    /// [`Ctx::tech_slot`], drawn lighter when it is the selected technology.
+    fn tech_slot_sel(
+        &mut self,
+        p: &mut ChildSpawnerCommands,
+        t: TechId,
+        w: f32,
+        h: f32,
+        button: Option<UiButton>,
+        selected: bool,
+    ) {
         let r = self.research;
         let db = self.db;
         let state = tech_state(db, r, t);
@@ -305,10 +318,12 @@ impl Ctx<'_> {
                 flex_shrink: 0.0,
                 ..default()
             },
-            crate::gui_skin::node_image(&look.default),
-            look.clone(),
+            crate::gui_skin::node_image(if selected { &look.hovered } else { &look.default }),
             Tip::Tech(t),
         ));
+        if !selected {
+            e.insert(look.clone());
+        }
         match button {
             Some(b) => e.insert((b, Button)),
             None => e.insert(Interaction::default()),
@@ -467,7 +482,9 @@ pub(super) fn window(
         .with_children(|left| {
             ctx.screen_heading(left, "Research queue");
             left.spawn(Node {
-                height: Val::Px(SLOT_H + 16.0),
+                // Measured from the game: the queue box is 110 px tall.
+                height: Val::Px(110.0),
+                flex_shrink: 0.0,
                 flex_direction: FlexDirection::Row,
                 align_items: AlignItems::Center,
                 justify_content: JustifyContent::SpaceEvenly,
@@ -540,7 +557,7 @@ pub(super) fn window(
                 })
                 .with_children(|g| {
                     for t in &order {
-                        ctx.tech_slot(g, *t, SLOT_W, SLOT_H, Some(UiButton::SelectTech(*t)));
+                        ctx.tech_slot_sel(g, *t, SLOT_W, SLOT_H, Some(UiButton::SelectTech(*t)), selected == Some(*t));
                     }
                 });
             });
@@ -599,7 +616,7 @@ fn card(p: &mut ChildSpawnerCommands, ctx: &mut Ctx, names: &Names, t: TechId) {
     let r = ctx.research;
     let tech = db.technology(t);
     ctx.screen_heading(p, format!("{} ({})", names.tech(r, t), state_name(tech_state(db, r, t))));
-    p.spawn(Node { flex_direction: FlexDirection::Column, ..default() }).with_children(|card| {
+    p.spawn(Node { flex_direction: FlexDirection::Column, flex_shrink: 0.0, ..default() }).with_children(|card| {
         crate::gui_skin::backdrop(card, &looks().tech_card);
         card.spawn(Node { flex_direction: FlexDirection::Row, ..default() }).with_children(|row| {
             row.spawn(Node { padding: UiRect::all(Val::Px(4.0)), ..default() })
@@ -612,6 +629,8 @@ fn card(p: &mut ChildSpawnerCommands, ctx: &mut Ctx, names: &Names, t: TechId) {
                 ..default()
             })
             .with_children(|col| {
+                // The details sit on the lighter shallow panel, as in the game.
+                crate::gui_skin::backdrop(col, &looks().shallow);
                 let sub = |col: &mut ChildSpawnerCommands, ctx: &Ctx, s: &str| {
                     col.spawn((
                         Text::new(s),
@@ -726,17 +745,15 @@ fn card(p: &mut ChildSpawnerCommands, ctx: &mut Ctx, names: &Names, t: TechId) {
             if r.is_researched(t) || tech.unit.is_none() {
                 return;
             }
-            if let Some(block) = r.blocking_trigger(db, t) {
-                let how =
-                    db.technology(block).trigger.as_ref().map(|tr| trigger_text(names, db, tr)).unwrap_or_default();
-                ctx.text(
-                    bar,
-                    format!("Needs {} first: {how}", names.tech(r, block)),
-                    14.0,
-                    Color::srgb(0.95, 0.5, 0.4),
-                );
-                return;
-            }
+            // As in the game the button is always there; what blocks it is in its tooltip.
+            let tip = match r.blocking_trigger(db, t) {
+                Some(block) => {
+                    let how =
+                        db.technology(block).trigger.as_ref().map(|tr| trigger_text(names, db, tr)).unwrap_or_default();
+                    format!("Needs {} first: {how}", names.tech(r, block))
+                }
+                None => "Shift+click: put it at the front of the queue".into(),
+            };
             let (label, button) = if r.queue.contains(&t) {
                 ("Remove from queue", UiButton::DequeueTech(t))
             } else {
@@ -749,7 +766,7 @@ fn card(p: &mut ChildSpawnerCommands, ctx: &mut Ctx, names: &Names, t: TechId) {
                 l.button.clone(),
                 button,
                 Button,
-                Tip::Text("Shift+click: put it at the front of the queue".into()),
+                Tip::Text(tip),
             ))
             .with_children(|b| ctx.text(b, label, 14.0, Color::BLACK));
         });
